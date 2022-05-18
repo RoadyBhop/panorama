@@ -1,0 +1,16 @@
+.synchronizer {
+    margin: 0px;
+    horizontal-align: center;
+
+    &__container {
+        height: 15px;
+        width: 240px;
+        border: 2px solid #FFFFFFFF;
+        flow-children: right;
+    }
+
+    &__segment {
+        height: 100%;
+        width: 25%;
+    }
+}
