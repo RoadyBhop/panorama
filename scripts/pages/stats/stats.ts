@@ -812,13 +812,17 @@ class StatsHandler {
 		const hole = $.CreatePanel('Panel', ring, '', {
 			style:
 				'width: 120px; height: 120px; horizontal-align: center; vertical-align: center; ' +
-				'border-radius: 60px; background-color: #10141a; flow-children: down;'
+				'border-radius: 60px; background-color: #10141a;'
 		});
-		$.CreatePanel('Label', hole, '', {
+		// Inner wrapper is centered both ways inside the (non-flowing) hole; it stacks the two labels.
+		const inner = $.CreatePanel('Panel', hole, '', {
+			style: 'flow-children: down; width: 100%; horizontal-align: center; vertical-align: center;'
+		});
+		$.CreatePanel('Label', inner, '', {
 			text: centerText,
-			style: `font-size: 36px; font-weight: bold; color: ${C_ACCENT}; horizontal-align: center; margin-top: 34px;`
+			style: `font-size: 34px; font-weight: bold; color: ${C_ACCENT}; horizontal-align: center;`
 		});
-		$.CreatePanel('Label', hole, '', {
+		$.CreatePanel('Label', inner, '', {
 			text: 'COMPLETE',
 			style: 'font-size: 10px; letter-spacing: 2px; color: #7d8794; horizontal-align: center;'
 		});
