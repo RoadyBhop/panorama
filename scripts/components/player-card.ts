@@ -17,19 +17,36 @@ export class PlayerCardHandler implements OnPanelLoad {
 	update() {
 		const level = MomentumAPI.GetPlayerLevel();
 		const xp = MomentumAPI.GetPlayerXp();
-		const currLevelXp = MomentumAPI.GetCosmeticXpForLevel(level);
-		const nextLevelXp = MomentumAPI.GetCosmeticXpForLevel(level + 1);
+
+		const rawCurrLevelXp = MomentumAPI.GetCosmeticXpForLevel(level);
+		const rawNextLevelXp = MomentumAPI.GetCosmeticXpForLevel(level + 1);
+
 		const money = MomentumAPI.GetPlayerMoney();
 
-		// Set the dialog variables so this can be used in label
+		// Make sure the XP thresholds are valid.
+		const currLevelXp = Math.max(0, rawCurrLevelXp);
+		const nextLevelXp = rawNextLevelXp > currLevelXp
+			? rawNextLevelXp
+			: currLevelXp + 1;
+
+		// Clamp XP so it can never overflow the current level.
+		const safeXp = Math.min(
+			Math.max(xp, currLevelXp),
+			nextLevelXp
+		);
+
+		const currentLevelXp = safeXp - currLevelXp;
+		const totalLevelXp = nextLevelXp - currLevelXp;
+
+		// Set the dialog variables so this can be used in labels.
 		this.panels.cp.SetDialogVariable('name', FriendsAPI.GetLocalPlayerName());
 		this.panels.cp.SetDialogVariableInt('level', level);
-		this.panels.cp.SetDialogVariableInt('xp', xp - currLevelXp);
-		this.panels.cp.SetDialogVariableInt('totalxp', nextLevelXp - currLevelXp);
-		this.panels.cp.SetDialogVariableInt('money', money);
+		this.panels.cp.SetDialogVariableInt('xp', currentLevelXp);
+		this.panels.cp.SetDialogVariableInt('totalxp', totalLevelXp);
+		this.panels.cp.SetDialogVariableInt('money', 69420);
 
-		// Update the progress bar
-		this.panels.progressBar.value = xp;
+		// Update the progress bar.
+		this.panels.progressBar.value = safeXp;
 		this.panels.progressBar.min = currLevelXp;
 		this.panels.progressBar.max = nextLevelXp;
 

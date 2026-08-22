@@ -36,10 +36,10 @@ class EndOfRunXPHandler implements OnPanelLoad {
 
 		this.xpData = this.getXPData();
 
-		this.panels.levelIndicator.handler.setLevel(this.xpData.level);
+	const levelXP = this.xpData.nextLevelXP - this.xpData.currLevelXP;
 
-		this.primaryWidth =
-			((this.xpData.xp - this.xpData.currLevelXP) / (this.xpData.nextLevelXP - this.xpData.currLevelXP)) * 100;
+	this.primaryWidth = levelXP > 0
+		? ((this.xpData.xp - this.xpData.currLevelXP) / levelXP) * 100 : 100;
 		this.panels.primaryBar.style.width = `${this.primaryWidth}%`;
 		this.panels.secondaryBar.style.width = '0%';
 

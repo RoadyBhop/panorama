@@ -1,0 +1,35 @@
+<root>
+	<styles>
+		<include src="file://{resources}/styles/main.scss" />
+	</styles>
+
+	<scripts>
+		<include type="module" src="file://{scripts}/pages/stats/stats.ts" />
+	</scripts>
+
+	<!-- Extra right padding (4-value: top right bottom left) keeps content clear of the collapsed right-side drawer handle. -->
+	<Panel class="mainmenu__page" style="flow-children: down; padding: 40px 76px 40px 40px;" onload="StatsHandler.onLoad()">
+		<!-- Header: title + ranked/unranked filter + rescan -->
+		<Panel style="flow-children: right; margin-bottom: 14px; width: 100%;">
+			<Image src="file://{images}/stats.svg" textureheight="40" style="width: 40px; height: 40px; margin-right: 14px; vertical-align: center;" />
+			<Label text="Completion" style="font-size: 36px; font-weight: bold; color: #ffffff; vertical-align: center;" />
+			<Panel class="w-fill" />
+			<Panel id="StatsFilter" style="flow-children: right; vertical-align: center; margin-right: 14px;" />
+			<Button class="button" onactivate="StatsHandler.rescan()" style="vertical-align: center; padding: 9px 20px; background-color: #232a33; border-radius: 6px;">
+				<Label text="Rescan" style="font-size: 15px; color: #ffffff;" />
+			</Button>
+		</Panel>
+
+		<Label id="StatsStatus" text="Loading&#8230;" style="font-size: 15px; color: #8a93a0; margin-bottom: 14px;" />
+
+		<!-- Gamemode selector bar (filled from TS) -->
+		<Panel id="StatsGamemodeBar" style="flow-children: right; width: 100%; overflow: scroll noclip; margin-bottom: 10px;" />
+
+		<!-- Style selector bar for the selected mode (filled from TS) -->
+		<Panel id="StatsStyleBar" style="flow-children: right; width: 100%; overflow: scroll noclip; margin-bottom: 16px;" />
+
+		<!-- Selected gamemode content: left stats + right tiers (filled from TS) -->
+		<!-- clip (not scroll/noclip): bounds the cards' height:100% and prevents the whole page from scrolling; only the tier map box scrolls. -->
+		<Panel id="StatsContent" style="flow-children: right; width: 100%; height: fill-parent-flow(1); overflow: squish clip;" />
+	</Panel>
+</root>
