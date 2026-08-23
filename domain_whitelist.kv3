@@ -7,5 +7,9 @@
 
 		// Temporarily added for Learn
 		"docs.google.com",
+
+		// Added for the Stats page's live leaderboard-rank fetching
+		"api.momentum-mod.org",
+		"momentum-proxy.jessicahops69.workers.dev",
 	]
 }

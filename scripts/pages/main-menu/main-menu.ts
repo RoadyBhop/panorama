@@ -74,6 +74,41 @@ class MainMenuHandler implements OnPanelLoad {
 		this.showPlaytestWelcomePopup();
 
 		$.DispatchEvent('MainMenuPageShown', null);
+
+		// Pre-create the Stats page (hidden) shortly after the menu loads, so it scans the map cache
+		// and pre-fetches leaderboard ranks in the background before the user ever opens it.
+		$.Msg('[Stats] main-menu onPanelLoad: scheduling Stats pre-warm in 4s');
+		$.Schedule(4, () => this.preloadStatsPage());
+	}
+
+	/** Instantiate the Stats page hidden so its background scan starts on menu load, not first open. */
+	preloadStatsPage() {
+		const page = 'Stats' as Page;
+		if (this.panels.cp.FindChildInLayoutFile(page)) {
+			$.Msg('[Stats] preloadStatsPage: panel already exists, skipping pre-warm');
+			return; // already created
+		}
+
+		$.Msg('[Stats] preloadStatsPage: creating hidden Stats panel + loading layout');
+		const newPanel = $.CreatePanel('Panel', this.panels.pageContent, page);
+		newPanel.LoadLayout('file://{resources}/layout/pages/stats/stats.xml', false, false);
+		newPanel.RegisterForReadyEvents(true);
+		$.RegisterEventHandler('PropertyTransitionEnd', newPanel, (panelName, propertyName) => {
+			if (
+				newPanel.id === panelName &&
+				propertyName === 'opacity' &&
+				newPanel.visible &&
+				newPanel.IsTransparent()
+			) {
+				newPanel.visible = false;
+				newPanel.SetReadyForDisplay(false);
+				return true;
+			}
+			return false;
+		});
+		// Keep it hidden until the user actually navigates to it.
+		newPanel.visible = false;
+		newPanel.AddClass('mainmenu__page-container--hidden');
 	}
 
 	/**
