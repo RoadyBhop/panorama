@@ -10,7 +10,7 @@
 	<!-- Extra right padding (4-value: top right bottom left) keeps content clear of the collapsed right-side drawer handle. -->
 	<Panel class="mainmenu__page" style="flow-children: down; padding: 40px 76px 40px 40px;" onload="StatsHandler.onLoad()">
 		<!-- Header: title + ranked/unranked filter + rescan -->
-		<Panel style="flow-children: right; margin-bottom: 14px; width: 100%;">
+		<Panel style="flow-children: right; margin-bottom: 12px; width: 100%;">
 			<Image src="file://{images}/stats.svg" textureheight="40" style="width: 40px; height: 40px; margin-right: 14px; vertical-align: center;" />
 			<Label text="Completion" style="font-size: 36px; font-weight: bold; color: #ffffff; vertical-align: center;" />
 			<Panel class="w-fill" />
@@ -18,6 +18,19 @@
 			<Button class="button" onactivate="StatsHandler.rescan()" style="vertical-align: center; padding: 9px 20px; background-color: #232a33; border-radius: 6px;">
 				<Label text="Rescan" style="font-size: 15px; color: #ffffff;" />
 			</Button>
+		</Panel>
+
+		<!-- Player search: view another user's completion + ranks, fetched live from the API. Blank = you. -->
+		<Panel style="flow-children: right; margin-bottom: 14px; width: 100%; vertical-align: center;">
+			<Label text="Player" style="font-size: 14px; color: #8a93a0; vertical-align: center; margin-right: 12px;" />
+			<TextEntry id="StatsUserSearch" class="textentry" maxchars="120" placeholder="Steam ID / name / profile URL — blank = you" ontextentrysubmit="StatsHandler.searchUser()" style="width: 380px; vertical-align: center; margin-right: 8px;" />
+			<Button class="button" onactivate="StatsHandler.searchUser()" style="vertical-align: center; padding: 9px 20px; background-color: #1c2b30; border: 1px solid #2a3f45; border-radius: 6px; margin-right: 8px;">
+				<Label text="View" style="font-size: 15px; color: #6fe0d0;" />
+			</Button>
+			<Button class="button" onactivate="StatsHandler.resetUser()" style="vertical-align: center; padding: 9px 20px; background-color: #232a33; border-radius: 6px;">
+				<Label text="Me" style="font-size: 15px; color: #ffffff;" />
+			</Button>
+			<Label id="StatsUserStatus" text="" style="font-size: 14px; color: #8a93a0; vertical-align: center; margin-left: 16px;" />
 		</Panel>
 
 		<Label id="StatsStatus" text="Loading&#8230;" style="font-size: 15px; color: #8a93a0; margin-bottom: 14px;" />

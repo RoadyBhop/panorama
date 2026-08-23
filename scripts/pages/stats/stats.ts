@@ -46,6 +46,18 @@ let selectedStyle: Style | null = null; // which style's completion is shown for
 let available: Gamemode[] = [];
 let selectedTier: number | null = null; // which tier's map list is expanded
 
+// Remote-user view: when set, completion + rank stats are for another player fetched live from the API
+// (same data model as the website), instead of the local player read from the local map cache.
+interface ViewUser {
+	id: number;
+	alias: string;
+	steamID?: string;
+}
+let viewUser: ViewUser | null = null; // null = the local player
+let remoteDone: Set<string> | null = null; // completed leaderboard keys "mapID|gm|tt|tn|style" for viewUser
+let userBusy = false; // a user lookup / PB fetch is in progress
+let userGen = 0; // bumped on each lookup so a stale in-flight fetch (or reset) aborts
+
 // Cached so the tier map-list can re-render without recomputing everything.
 // The cards persist across re-renders (only their contents are refilled) to avoid the solid card
 // boxes flashing over the transparent/blurred in-game background on every gamemode/style change.
@@ -135,6 +147,153 @@ class StatsHandler {
 		scanCache = null;
 		this.scan();
 	}
+
+	//#region view another player
+
+	/** The leaderboard key used both for a remote user's completed runs and for map lookups. */
+	doneKey(mapID: number, gm: Gamemode, tt: TrackType, tn: number, style: Style): string {
+		return `${mapID}|${gm}|${tt}|${tn}|${style}`;
+	}
+
+	/** The user id whose stats are currently shown: the searched remote user, else the local player. */
+	viewUid(): number {
+		if (viewUser) return viewUser.id;
+		try {
+			return MomentumAPI.GetLocalUserData().id;
+		} catch {
+			return 0;
+		}
+	}
+
+	/** Small status/indicator line next to the player search box. */
+	setUserStatus(text: string, isError = false) {
+		const el = $<Label>('#StatsUserStatus');
+		if (!el) return;
+		el.text = text;
+		try {
+			el.style.color = isError ? '#e0736f' : '#8a93a0';
+		} catch {}
+	}
+
+	/** Reflect who's being viewed (local player vs a searched user) in the status line. */
+	updateViewLabel() {
+		if (viewUser) this.setUserStatus(`Viewing ${viewUser.alias} · ${remoteDone?.size ?? 0} PBs`);
+		else this.setUserStatus('');
+	}
+
+	/** Button / Enter handler: look up whatever is typed in the search box. */
+	searchUser() {
+		const entry = $<TextEntry>('#StatsUserSearch');
+		const q = (entry?.text ?? '').trim();
+		if (!q) {
+			this.resetUser(); // empty search = back to the local player
+			return;
+		}
+		void this.doSearch(q);
+	}
+
+	/** Resolve the query to a user, fetch their PBs, then re-render everything for them. */
+	async doSearch(q: string) {
+		if (userBusy) return;
+		userBusy = true;
+		const gen = ++userGen; // supersede any older lookup still running
+		$.Msg(`[Stats] searchUser: looking up "${q}"`);
+		this.setUserStatus(`Finding "${q}"…`);
+		try {
+			const user = await this.resolveUser(q);
+			if (gen !== userGen) return; // a newer search / reset happened
+			if (!user) {
+				this.setUserStatus(`No user matching "${q}".`, true);
+				return;
+			}
+			this.setUserStatus(`Loading ${user.alias}'s runs…`);
+			const done = await this.fetchUserDone(user.id, gen);
+			if (gen !== userGen) return;
+			viewUser = user;
+			remoteDone = done;
+			$.Msg(`[Stats] searchUser: ${user.alias} (id ${user.id}) → ${done.size} completed leaderboards`);
+			this.applyUserChange();
+		} catch (e) {
+			if (gen === userGen) this.setUserStatus(`Lookup failed: ${String(e)}`, true);
+			$.Msg(`[Stats] searchUser: failed — ${String(e)}`);
+		} finally {
+			if (gen === userGen) userBusy = false;
+		}
+	}
+
+	/** Reset the view back to the local player (also used when the search box is cleared). */
+	resetUser() {
+		if (!viewUser && !userBusy) return; // already local
+		userGen++; // abort any in-flight lookup
+		userBusy = false;
+		viewUser = null;
+		remoteDone = null;
+		const entry = $<TextEntry>('#StatsUserSearch');
+		if (entry) entry.text = '';
+		$.Msg('[Stats] resetUser: back to local player');
+		this.applyUserChange();
+	}
+
+	/** Re-render completion + restart the (per-user) rank scans after the viewed user changes. */
+	applyUserChange() {
+		rankResults = {}; // rank stats are per-user — drop the cache
+		rankQueue = [];
+		rankGen++; // supersede any in-flight rank scan
+		selectedTier = null; // a different user's tier set / expansion no longer applies
+		this.updateViewLabel();
+		this.renderContent(); // recomputes completion from the new user
+		this.enqueueAllModes(); // refetch ranks for the new user (all modes, both filters)
+	}
+
+	/** Resolve a search string (numeric id / SteamID64 / steam profile URL / alias) to a Momentum user. */
+	async resolveUser(q: string): Promise<ViewUser | null> {
+		q = q.trim();
+		const urlMatch = q.match(/steamcommunity\.com\/profiles\/(\d+)/);
+		if (urlMatch) q = urlMatch[1];
+
+		let user: any = null;
+		if (/^\d+$/.test(q)) {
+			if (q.length >= 15) {
+				// SteamID64 → Momentum user
+				const j = await this.fetchJson(`${API}/v1/users?steamID=${q}&take=1`, 4);
+				user = j?.data?.[0] ?? null;
+			} else {
+				// Momentum user id
+				user = await this.fetchJson(`${API}/v1/users/${q}`, 4);
+			}
+		} else {
+			// Alias search — prefer an exact (case-insensitive) alias match, else the first result.
+			const j = await this.fetchJson(`${API}/v1/users?search=${encodeURIComponent(q)}&take=20`, 4);
+			const c: any[] = j?.data ?? [];
+			user = c.find((u) => (u.alias ?? '').toLowerCase() === q.toLowerCase()) ?? c[0] ?? null;
+		}
+
+		if (!user || user.id == null) return null;
+		return { id: user.id, alias: user.alias ?? `User ${user.id}`, steamID: user.steamID };
+	}
+
+	/** Fetch every PB run for a user and build the set of completed leaderboard keys (paginated). */
+	async fetchUserDone(uid: number, gen: number): Promise<Set<string>> {
+		const done = new Set<string>();
+		const take = 100;
+		let skip = 0;
+		for (let page = 0; page < 100; page++) {
+			// max 100 pages = 10k PBs (safety ceiling)
+			const j = await this.fetchJson(`${API}/v1/runs?userID=${uid}&isPB=true&take=${take}&skip=${skip}`);
+			if (gen !== userGen) break; // superseded — stop fetching
+			const data: any[] = j?.data ?? [];
+			for (const r of data) {
+				if (r?.mapID == null) continue;
+				done.add(this.doneKey(r.mapID, r.gamemode, r.trackType, r.trackNum, r.style));
+			}
+			if (gen === userGen) this.setUserStatus(`Loading runs… ${done.size}`);
+			if (data.length < take) break; // last page
+			skip += take;
+		}
+		return done;
+	}
+
+	//#endregion
 
 	/** Chunked id scan of the local map cache. */
 	scan() {
@@ -226,6 +385,7 @@ class StatsHandler {
 		this.renderBar();
 		this.renderStyleBar();
 		this.renderContent();
+		this.updateViewLabel(); // restore the "Viewing <user>" indicator on re-open
 
 		// Crunch through every gamemode's ranks in the background (current selection first).
 		this.enqueueAllModes();
@@ -302,7 +462,8 @@ class StatsHandler {
 			unrankedDone: 0
 		};
 
-		for (const { staticData, userData } of maps) {
+		for (const map of maps) {
+			const { staticData } = map;
 			if (staticData.status !== MapStatus.APPROVED) continue; // exclude beta/testing/submission maps
 
 			const lb = getTrack(staticData, gm, TrackType.MAIN, 1, style);
@@ -312,7 +473,7 @@ class StatsHandler {
 			const isUnranked = lb.type === LeaderboardType.UNRANKED;
 			if (!isRanked && !isUnranked) continue; // exclude hidden / in-submission
 
-			const done = this.isDone(userData, gm, style);
+			const done = this.isDone(map, gm, style);
 
 			if (isRanked) {
 				s.rankedTotal++;
@@ -788,7 +949,8 @@ class StatsHandler {
 		const maps = scanCache ?? [];
 		const out: { mapID: number; gm: Gamemode; style: Style }[] = [];
 		const add = (gm: Gamemode, st: Style) => {
-			for (const { staticData, userData } of maps) {
+			for (const map of maps) {
+				const { staticData } = map;
 				if (staticData.status !== MapStatus.APPROVED) continue;
 				const lb = getTrack(staticData, gm, TrackType.MAIN, 1, st);
 				if (!lb || !lb.tier) continue;
@@ -797,7 +959,7 @@ class StatsHandler {
 				if (!isRanked && !isUnranked) continue;
 				if (filter === 'ranked' && !isRanked) continue;
 				if (filter === 'unranked' && !isUnranked) continue;
-				if (!this.isDone(userData, gm, st)) continue;
+				if (!this.isDone(map, gm, st)) continue;
 				out.push({ mapID: staticData.id, gm, style: st });
 			}
 		};
@@ -850,17 +1012,12 @@ class StatsHandler {
 		};
 
 		const targets = this.gatherTargetsFor(mode, style, filter);
-		$.Msg(`[Stats] runRankScan: ${key} — ${targets.length} completed maps to query`);
-		let uid = 0;
-		try {
-			uid = MomentumAPI.GetLocalUserData().id;
-		} catch {
-			uid = 0;
-		}
+		const uid = this.viewUid(); // local player, or the searched remote user
+		$.Msg(`[Stats] runRankScan: ${key} — ${targets.length} completed maps to query (uid ${uid})`);
 
 		if (!uid || targets.length === 0) {
 			rankResults[key] = { ...EMPTY_RANK, targets: targets.length };
-			if (isCurrent()) note(targets.length === 0 ? 'No completed maps in this view.' : 'Could not read local user.');
+			if (isCurrent()) note(targets.length === 0 ? 'No completed maps in this view.' : 'Could not read the user id.');
 			render();
 			return;
 		}
@@ -1241,7 +1398,7 @@ class StatsHandler {
 				if (rankFilter === 'ranked' && !isRanked) continue;
 				if (rankFilter === 'unranked' && !isUnranked) continue;
 
-				const done = this.isDone(data.userData, gm, style);
+				const done = this.isDone(data, gm, style);
 				out.push({ data, name: data.staticData.name, done, mode: gm });
 			}
 		}
@@ -1320,15 +1477,22 @@ class StatsHandler {
 	//#endregion
 
 	/**
-	 * Whether the user has completed a map's main track for this mode.
-	 * The game records completion at style 0 (map-selector/map-entry read it there for every mode,
-	 * climb included), so we check style 0 first, then the selected style as a fallback.
+	 * Whether the viewed user (the local player, or a searched remote user) has completed a map's
+	 * main track for this mode/style.
 	 */
-	isDone(userData: MapCacheAPI.UserData | undefined, gm: Gamemode, style: Style): boolean {
+	isDone(map: MapCacheAPI.MapData, gm: Gamemode, style: Style): boolean {
+		if (remoteDone) {
+			// Remote user: completion comes from their API personal-bests, keyed by the *leaderboard*
+			// style exactly as /v1/runs reports it — climb runs come back at Pro(8)/Teleport(9), normal
+			// modes at 0 (or their real run style). So no Pro/Teleport→0 remap here (unlike local).
+			return remoteDone.has(this.doneKey(map.staticData.id, gm, TrackType.MAIN, 1, style));
+		}
+		// Local player: read from the local map cache. The game records completion at the run style
+		// (mom_style); Pro/Teleport are climb *leaderboard* classifications (not run styles) stored at
+		// style 0. Every other style is a real run style under its own key — so a Normal run never
+		// counts as Sideways/W-only/etc.
+		const userData = map.userData;
 		if (!userData) return false;
-		// Completion is keyed by the run style (mom_style). Pro/Teleport are climb *leaderboard*
-		// classifications, not run styles, so those runs are stored at style 0. Every other style is a
-		// real run style stored under its own key — so a Normal run never counts as Sideways/W-only/etc.
 		const trackStyle = style === Style.PRO || style === Style.TELEPORT ? 0 : style;
 		return !!getUserMapDataTrack(userData, gm, TrackType.MAIN, 1, trackStyle)?.completed;
 	}
