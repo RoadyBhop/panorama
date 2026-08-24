@@ -77,8 +77,13 @@ class MainMenuHandler implements OnPanelLoad {
 
 		// Pre-create the Stats page (hidden) shortly after the menu loads, so it scans the map cache
 		// and pre-fetches leaderboard ranks in the background before the user ever opens it.
-		$.Msg('[Stats] main-menu onPanelLoad: scheduling Stats pre-warm in 4s');
-		$.Schedule(4, () => this.preloadStatsPage());
+		// Opt-in only (off by default) — toggled from the Stats page and saved to persistent storage.
+		if ($.persistentStorage.getItem('stats.preloadEnabled')) {
+			$.Msg('[Stats] main-menu onPanelLoad: preload enabled, scheduling Stats pre-warm in 4s');
+			$.Schedule(4, () => this.preloadStatsPage());
+		} else {
+			$.Msg('[Stats] main-menu onPanelLoad: Stats preload disabled (enable it on the Stats page)');
+		}
 	}
 
 	/** Instantiate the Stats page hidden so its background scan starts on menu load, not first open. */

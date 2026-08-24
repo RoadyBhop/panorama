@@ -139,6 +139,7 @@ class StatsHandler {
 	// PanelLoaded/onPanelLoad hook which runs too early and stalled the chunked scan).
 	onLoad() {
 		$.Msg(`[Stats] onLoad: scanCache=${scanCache ? scanCache.length + ' maps' : 'none'}, scanning=${scanning}`);
+		this.updatePreloadLabel();
 		if (scanCache) this.buildAll();
 		else if (!scanning) this.scan();
 	}
@@ -147,6 +148,34 @@ class StatsHandler {
 		scanCache = null;
 		this.scan();
 	}
+
+	//#region preload toggle
+
+	/** Whether the main menu should pre-warm this page on load (persisted, off by default). */
+	preloadEnabled(): boolean {
+		return !!$.persistentStorage.getItem<boolean>('stats.preloadEnabled');
+	}
+
+	togglePreload() {
+		const next = !this.preloadEnabled();
+		$.persistentStorage.setItem('stats.preloadEnabled', next);
+		$.Msg(`[Stats] togglePreload: preload ${next ? 'ENABLED' : 'disabled'} (applies on next main-menu load)`);
+		this.updatePreloadLabel();
+	}
+
+	updatePreloadLabel() {
+		const on = this.preloadEnabled();
+		const lbl = $<Label>('#StatsPreloadLabel');
+		if (lbl) lbl.text = on ? 'Preload: On' : 'Preload: Off';
+		const btn = $<Panel>('#StatsPreloadToggle');
+		if (btn) {
+			try {
+				btn.style.backgroundColor = on ? '#1c2b30' : '#232a33';
+			} catch {}
+		}
+	}
+
+	//#endregion
 
 	//#region view another player
 

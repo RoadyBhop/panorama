@@ -20,6 +20,13 @@
 				<Panel id="Needle" class="strafetrainer__needle" />
 			</Panel>
 		</Panel>
+		<!-- Graph display mode: a scrolling history of strafe values drawn on a canvas. Hidden unless Graph mode is selected. -->
+		<!-- graph-area holds the (optional) background + the canvas, inset from the labels via margins. -->
+		<Panel id="GraphWrapper" class="strafetrainer__graph-wrapper">
+			<Panel id="GraphArea" class="strafetrainer__graph-area">
+				<UICanvas id="GraphCanvas" class="strafetrainer__graph-canvas" />
+			</Panel>
+		</Panel>
 		<Panel class="strafetrainer__stats">
 			<Label id="StatsUpper" class="strafetrainer__stats--upper" />
 			<Label id="StatsLower" class="strafetrainer__stats--lower" />

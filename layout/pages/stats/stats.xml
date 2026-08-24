@@ -15,8 +15,11 @@
 			<Label text="Completion" style="font-size: 36px; font-weight: bold; color: #ffffff; vertical-align: center;" />
 			<Panel class="w-fill" />
 			<Panel id="StatsFilter" style="flow-children: right; vertical-align: center; margin-right: 14px;" />
-			<Button class="button" onactivate="StatsHandler.rescan()" style="vertical-align: center; padding: 9px 20px; background-color: #232a33; border-radius: 6px;">
-				<Label text="Rescan" style="font-size: 15px; color: #ffffff;" />
+			<Button id="StatsPreloadToggle" class="button" onactivate="StatsHandler.togglePreload()" onmouseover="UiToolkitAPI.ShowTextTooltip('StatsPreloadToggle', 'Pre-scan this page in the background when the main menu loads so it opens instantly')" onmouseout="UiToolkitAPI.HideTextTooltip()" style="vertical-align: center; padding: 9px 20px; margin-right: 8px; background-color: #232a33; border-radius: 6px;">
+					<Label id="StatsPreloadLabel" text="Preload: Off" style="font-size: 15px; color: #ffffff;" />
+				</Button>
+				<Button class="button" onactivate="StatsHandler.rescan()" style="vertical-align: center; padding: 9px 20px; background-color: #232a33; border-radius: 6px;">
+					<Label text="Rescan" style="font-size: 15px; color: #ffffff;" />
 			</Button>
 		</Panel>
 

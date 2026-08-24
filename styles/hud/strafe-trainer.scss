@@ -39,6 +39,33 @@ $border-color: rgba(255, 255, 255, 0.3);
 		// box-shadow: 0 0 2px rgba(255, 255, 255, 0.05);
 	}
 
+	// Graph display mode. Hidden by default; the handler toggles visibility with the bar wrapper.
+	// Fills the component so it grows when the panel is resized (esp. taller for the vertical layout).
+	&__graph-wrapper {
+		width: 100%;
+		height: 100%;
+		flow-children: down;
+		vertical-align: center;
+		horizontal-align: center;
+		visibility: collapse;
+	}
+
+	// Top/bottom margins keep the graph clear of the stat labels (which sit at the very top and bottom of
+	// the component), so the graph and the labels don't overlap. The configurable graph background lives
+	// HERE (not the wrapper) so it only covers the graph area, not the label gutters. (UICanvas itself
+	// doesn't paint a background, so the colour goes on this panel behind the canvas.)
+	&__graph-area {
+		width: 100%;
+		height: fill-parent-flow(1);
+		margin: 26px 0;
+		border-radius: 8px;
+	}
+
+	&__graph-canvas {
+		width: 100%;
+		height: 100%;
+	}
+
 	&__stats {
 		height: 100%;
 		width: 300px;
