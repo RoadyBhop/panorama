@@ -1,0 +1,46 @@
+<root>
+	<styles>
+		<include src="file://{resources}/styles/main.scss" />
+	</styles>
+
+	<scripts>
+		<include type="module" src="file://{scripts}/pages/lobby-list/css-lobby-list.ts" />
+	</scripts>
+
+	<Panel class="mainmenu__page csslobbies-page" onload="CssLobbyListHandler.onLoad()">
+		<Panel class="csslobbies">
+			<!-- Title bar -->
+			<Panel class="csslobbies__titlebar">
+				<Label class="csslobbies__title" text="Lobbies" />
+				<Button class="csslobbies__close" onactivate="CssLobbyListHandler.close()">
+					<Image class="csslobbies__close-icon" src="file://{images}/close.svg" textureheight="24" />
+				</Button>
+			</Panel>
+
+			<!-- Column header (filled from TS so it lines up with the rows) -->
+			<Panel id="CssLobbiesHead" class="csslobbies__head" />
+
+			<!-- Lobby list -->
+			<Panel class="csslobbies__listwrap">
+				<Panel id="CssLobbiesList" class="csslobbies__list" />
+			</Panel>
+
+			<Label id="CssLobbiesStatus" class="csslobbies__status" text="Loading lobbies&#8230;" />
+
+			<!-- Bottom bar: count + create/refresh/join -->
+			<Panel class="csslobbies__bottom">
+				<Label id="CssLobbiesCount" class="csslobbies__count" text="" />
+				<Panel class="w-fill" />
+				<Button class="csslobbies__btn" onactivate="CssLobbyListHandler.create()">
+					<Label class="csslobbies__btn-text" text="Create" />
+				</Button>
+				<Button class="csslobbies__btn" onactivate="CssLobbyListHandler.refresh()">
+					<Label class="csslobbies__btn-text" text="Refresh" />
+				</Button>
+				<Button id="CssLobbiesJoin" class="csslobbies__btn csslobbies__btn--connect" onactivate="CssLobbyListHandler.join()">
+					<Label class="csslobbies__btn-text" text="Join" />
+				</Button>
+			</Panel>
+		</Panel>
+	</Panel>
+</root>

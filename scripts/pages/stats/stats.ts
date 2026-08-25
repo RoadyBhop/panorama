@@ -88,11 +88,34 @@ interface RankResult {
 	sumRank: number;
 	sumPct: number;
 	pctCount: number;
+	// Count of ranked maps whose *best* group is G1..G6 (index 0 = G1 … 5 = G6). Exclusive: each map
+	// lands in exactly one group (or none, if worse than G6). Filled during phase 2 (needs board totals).
+	groups: number[];
 }
 const EMPTY_RANK: RankResult = {
 	wr: 0, top10: 0, avgRank: 0, avgPct: null, pctPending: false,
-	ranked: 0, noEntry: 0, errors: 0, targets: 0, elapsed: 0, sumRank: 0, sumPct: 0, pctCount: 0
+	ranked: 0, noEntry: 0, errors: 0, targets: 0, elapsed: 0, sumRank: 0, sumPct: 0, pctCount: 0,
+	groups: [0, 0, 0, 0, 0, 0]
 };
+
+// Ranking ladder, best → worst: WR (rank 1) → Top 10 (ranks 2–10) → G1 … G6 → No group. WR and Top 10 are
+// their own tiers ABOVE the numeric groups: since every G1 threshold is ≥ 20, a rank ≤ 10 would otherwise
+// always land in G1, so those maps are pulled out and marked WR / Top 10 instead (per-map and in the strip).
+// A map's group (rank > 10) comes from your rank `r` on its board of size `N`: you qualify for group i if
+// `r <= max(N * pct + 10, floor)`. The floor keeps small boards fair. Thresholds nest (G1 tightest), so the
+// first that qualifies, scanning G1→G6, is your best group.
+const GROUP_DEFS: { pct: number; floor: number }[] = [
+	{ pct: 0.02, floor: 20 }, // G1 = max(top 2% + 10, top 20)
+	{ pct: 0.04, floor: 35 }, // G2 = max(top 4% + 10, top 35)
+	{ pct: 0.08, floor: 60 }, // G3 = max(top 8% + 10, top 60)
+	{ pct: 0.16, floor: 100 }, // G4 = max(top 16% + 10, top 100)
+	{ pct: 0.33, floor: 150 }, // G5 = max(top 33% + 10, top 150)
+	{ pct: 0.66, floor: 225 } // G6 = max(top 66% + 10, top 225)
+];
+// WR = gold, Top 10 = teal (matching the tiles above); G1 → G6 a warm-to-cool gradient below them.
+const RANK_WR_COLOR = '#f2c14e';
+const RANK_T10_COLOR = '#6fe0d0';
+const GROUP_COLORS = ['#d8c26a', '#e0a86f', '#8fd694', '#7fb0e0', '#9aa3af', '#6f7885'];
 let rankResults: Record<string, RankResult> = {};
 let rankBusy = false;
 let rankGen = 0; // bumped on rescan; a running scan aborts if it no longer matches
@@ -102,6 +125,22 @@ let curRankBody: Panel | null = null;
 // Queue of (mode,style,filter) to scan — the current selection is pushed to the front, all gamemodes
 // behind it, so everything fills in ASAP while prioritising what's on screen.
 let rankQueue: { mode: Gamemode; style: Style | null; filter: RankFilter }[] = [];
+
+// Per-map rank detail, keyed `mapID|gm|style`, filled as the rank scans run so the tier map list can show
+// each map's placement without extra API calls. Cleared with the rank cache (rescan / viewed-user change).
+interface PerMapRank {
+	rank: number | null; // your placement on the board (null = you're not on the current board)
+	time: number | null; // your run time, seconds
+	total: number | null; // board size (from phase 2 — needed for the group)
+	wrTime: number | null; // rank-1 time, seconds (from the same phase-2 call → WR diff, no extra request)
+}
+let perMapRank: Record<string, PerMapRank> = {};
+// Live refs to each shown tier-map row's rank-info cell, so a scan can fill it in place after the fact.
+let tierRankRows: { key: string; panel: Panel }[] = [];
+// Persistent tier rows + the map-list holder, so clicking a tier only restyles/refills — it never recreates
+// the row under the cursor (which made its hover tooltip flash at the press point for one frame).
+let tierBtns: { tier: number; row: Panel; label: Panel }[] = [];
+let tierMapHolder: Panel | null = null;
 
 // Map ids are submission ids: sparse and growing (newest approved maps sit at high ids with big
 // gaps of unapproved ids before them). We scan the FULL range so recently-approved maps aren't
@@ -266,6 +305,7 @@ class StatsHandler {
 	/** Re-render completion + restart the (per-user) rank scans after the viewed user changes. */
 	applyUserChange() {
 		rankResults = {}; // rank stats are per-user — drop the cache
+		perMapRank = {}; // and the per-map rank detail
 		rankQueue = [];
 		rankGen++; // supersede any in-flight rank scan
 		selectedTier = null; // a different user's tier set / expansion no longer applies
@@ -337,6 +377,7 @@ class StatsHandler {
 		leftCard = null; // cards were just deleted; force recreation on next render
 		rightCard = null;
 		rankResults = {}; // completions may have changed; drop cached rank stats
+		perMapRank = {}; // and the per-map rank detail
 		rankQueue = []; // drop any pending scans
 		rankGen++; // supersede any in-flight rank scan
 
@@ -412,8 +453,7 @@ class StatsHandler {
 
 		this.renderFilter();
 		this.renderBar();
-		this.renderStyleBar();
-		this.renderContent();
+		this.renderContent(); // styles now render inside the right card (sub-left)
 		this.updateViewLabel(); // restore the "Viewing <user>" indicator on re-open
 
 		// Crunch through every gamemode's ranks in the background (current selection first).
@@ -434,15 +474,13 @@ class StatsHandler {
 		if (gm !== ALL_MODES) selectedStyle = GamemodeDefaultUIStyle.get(gm) ?? Style.NORMAL;
 		selectedTier = null; // tier set differs per gamemode
 		this.highlightBar(); // gamemode bar: restyle only
-		this.renderStyleBar(); // style bar content changes per mode, so it does rebuild
-		this.renderContent();
+		this.renderContent(); // rebuilds the right card, incl. this mode's style buttons in the sub-left
 	}
 
 	setStyle(st: Style) {
 		selectedStyle = st;
 		selectedTier = null; // tier set differs per style
-		this.highlightStyle(); // restyle only, no rebuild
-		this.renderContent();
+		this.renderContent(); // the right card rebuilds; renderStyles re-highlights the active style
 	}
 
 	/** Ensure selectedStyle is valid for the given mode, defaulting to its UI style. */
@@ -475,7 +513,36 @@ class StatsHandler {
 	/** Toggle a tier's expanded map list. */
 	selectTier(t: number) {
 		selectedTier = selectedTier === t ? null : t;
-		if (rightCard && curStat) this.fillRight(rightCard, curStat);
+		// Only restyle the (persistent) tier rows and refill the map-list holder — never recreate the row
+		// the cursor is on, which would make its "Show tier X maps" tooltip flash at the press point for a
+		// frame before snapping back to the hover spot.
+		this.refreshTierExpansion();
+	}
+
+	/** Update tier-row highlights and (re)build only the expanded map list, leaving the rows in place. */
+	refreshTierExpansion() {
+		for (const b of tierBtns) {
+			if (b.row.IsValid()) this.styleTierRow(b.row, b.label, selectedTier === b.tier);
+		}
+		if (!tierMapHolder || !tierMapHolder.IsValid()) return;
+		tierMapHolder.RemoveAndDeleteChildren();
+		tierRankRows = [];
+		if (curStat && (selectedTier == null || curStat.tiers.has(selectedTier))) {
+			this.renderTierMaps(tierMapHolder, selectedTier);
+		}
+	}
+
+	/** Toggle a tier row's active styling (bg + left accent + label colour) without recreating it. */
+	styleTierRow(row: Panel, label: Panel, on: boolean) {
+		try {
+			row.style.backgroundColor = on ? '#1b2530' : '#00000000';
+		} catch {}
+		try {
+			row.style.borderColor = on ? C_ACCENT : '#00000000'; // only border-left has width, so this tints it
+		} catch {}
+		try {
+			label.style.color = on ? '#ffffff' : '#cdd5df';
+		} catch {}
 	}
 
 	/** Per-gamemode / per-style main-track completion for a rank filter. Skips untiered / hidden / in-submission. */
@@ -666,30 +733,31 @@ class StatsHandler {
 		}
 	}
 
-	/** Small bar of the selected mode's valid styles (Normal / Pro / Teleport / Sideways / …). */
-	renderStyleBar() {
-		const bar = $<Panel>('#StatsStyleBar');
-		if (!bar) return;
-		bar.RemoveAndDeleteChildren();
+	/** The selected mode's valid styles (Normal / Pro / Teleport / Sideways / …), rendered into the given
+	 *  container (the right card's sub-left column). No-op when the mode has no choice of styles. */
+	renderStyles(parent: Panel) {
 		styleBtns = [];
 
 		const styles = selectedMode == null || selectedMode === ALL_MODES
 			? []
 			: [...(GamemodeStyles.get(selectedMode) ?? [])];
 
-		// Only meaningful when the mode actually has a choice of styles; otherwise hide the bar entirely.
-		bar.visible = styles.length > 1;
-		if (!bar.visible) return;
+		// Only meaningful when the mode actually has a choice of styles.
+		if (styles.length <= 1) return;
 
-		$.CreatePanel('Label', bar, '', {
+		$.CreatePanel('Label', parent, '', {
 			text: 'Style',
-			style: 'font-size: 12px; color: #6f7885; vertical-align: center; margin-right: 10px;'
+			style: 'font-size: 12px; font-weight: bold; color: #6f7885; margin-bottom: 6px;'
+		});
+		// Wrap onto multiple rows rather than scrolling sideways (the sub-left column is narrow).
+		const bar = $.CreatePanel('Panel', parent, '', {
+			style: 'flow-children: right-wrap; width: 100%; margin-bottom: 8px;'
 		});
 
 		for (const st of styles) {
 			const btn = $.CreatePanel('Panel', bar, '', {
 				style:
-					'flow-children: right; padding: 5px 14px; margin-right: 6px; border-radius: 6px; ' +
+					'flow-children: right; padding: 5px 14px; margin-right: 6px; margin-bottom: 6px; border-radius: 6px; ' +
 					`background-color: #141922; border: 1px solid ${C_BORDER};`
 			});
 			btn.SetPanelEvent('onactivate', () => this.setStyle(st));
@@ -809,17 +877,10 @@ class StatsHandler {
 			rankFilter === 'ranked' ? '#6b7280' : '#e0a86f'
 		);
 
-		// Live leaderboard-rank stats (fetched from the API on demand).
+		// Group rankings + averages (live from the API, loaded in the background). The strip supplies its
+		// own "Group rankings" header, so no separate section title here.
 		const rankSec = $.CreatePanel('Panel', card, '', {
-			style: `flow-children: down; width: 100%; margin-top: 16px; padding-top: 14px; border-top: 1px solid ${C_BORDER};`
-		});
-		$.CreatePanel('Label', rankSec, '', {
-			text: 'Leaderboard ranks',
-			style: 'font-size: 13px; font-weight: bold; color: #cdd5df; margin-bottom: 2px;'
-		});
-		$.CreatePanel('Label', rankSec, '', {
-			text: 'Live from the API · loads in the background',
-			style: 'font-size: 11px; color: #6f7885; margin-bottom: 10px;'
+			style: `flow-children: down; width: 100%; margin-top: 14px; padding-top: 14px; border-top: 1px solid ${C_BORDER};`
 		});
 		const rankBody = $.CreatePanel('Panel', rankSec, '', { style: 'flow-children: down; width: 100%;' });
 		curRankBody = rankBody;
@@ -951,18 +1012,22 @@ class StatsHandler {
 		gm: Gamemode,
 		style: Style,
 		uid: number
-	): Promise<{ rank: number | null; ok: boolean }> {
+	): Promise<{ rank: number | null; time: number | null; ok: boolean }> {
 		const url = `${API}/v1/maps/${mapID}/leaderboard?gamemode=${gm}&trackType=0&trackNum=1&style=${style}&userIDs=${uid}`;
 		const j = await this.fetchJson(url);
-		if (j == null) return { rank: null, ok: false }; // request failed after retries
-		return { rank: j.data && j.data[0] ? j.data[0].rank : null, ok: true };
+		if (j == null) return { rank: null, time: null, ok: false }; // request failed after retries
+		const entry = j.data && j.data[0] ? j.data[0] : null;
+		return { rank: entry ? entry.rank : null, time: entry ? entry.time : null, ok: true };
 	}
 
-	/** Total ranked entries on one map's (gm, main, style) leaderboard (for percentile). */
-	async fetchTotal(mapID: number, gm: Gamemode, style: Style): Promise<number> {
+	/** Board size + the rank-1 time on one map's (gm, main, style) leaderboard. `take=1` already returns
+	 *  the top entry, so the WR time comes free — no extra request beyond the percentile call. */
+	async fetchTotal(mapID: number, gm: Gamemode, style: Style): Promise<{ total: number; wrTime: number | null }> {
 		const url = `${API}/v1/maps/${mapID}/leaderboard?gamemode=${gm}&trackType=0&trackNum=1&style=${style}&take=1`;
 		const j = await this.fetchJson(url);
-		return j ? j.totalCount || 0 : 0;
+		if (!j) return { total: 0, wrTime: null };
+		const entry = j.data && j.data[0] ? j.data[0] : null;
+		return { total: j.totalCount || 0, wrTime: entry ? entry.time : null };
 	}
 
 	rankKey(mode: Gamemode, style: Style | null, filter: RankFilter): string {
@@ -1045,7 +1110,7 @@ class StatsHandler {
 		$.Msg(`[Stats] runRankScan: ${key} — ${targets.length} completed maps to query (uid ${uid})`);
 
 		if (!uid || targets.length === 0) {
-			rankResults[key] = { ...EMPTY_RANK, targets: targets.length };
+			rankResults[key] = { ...EMPTY_RANK, targets: targets.length, groups: [0, 0, 0, 0, 0, 0] };
 			if (isCurrent()) note(targets.length === 0 ? 'No completed maps in this view.' : 'Could not read the user id.');
 			render();
 			return;
@@ -1061,9 +1126,20 @@ class StatsHandler {
 		if (isCurrent()) note(`Scanning ranks… 0/${targets.length}`);
 		await this.pool(targets, 10, async (t) => {
 			const res = await this.fetchRank(t.mapID, t.gm, t.style, uid);
-			if (!res.ok) errors++;
-			else if (res.rank != null) ranked.push({ ...t, rank: res.rank });
-			else noEntry++;
+			if (gen === rankGen) {
+				const pmKey = this.perMapKey(t.mapID, t.gm, t.style);
+				if (!res.ok) {
+					errors++;
+				} else if (res.rank != null) {
+					ranked.push({ ...t, rank: res.rank });
+					perMapRank[pmKey] = { rank: res.rank, time: res.time, total: null, wrTime: null };
+					this.updateTierRankRow(pmKey); // fill this map's row in the tier list, if it's shown
+				} else {
+					noEntry++;
+					perMapRank[pmKey] = { rank: null, time: null, total: null, wrTime: null };
+					this.updateTierRankRow(pmKey);
+				}
+			}
 			done++;
 			if (isCurrent() && (done % 5 === 0 || done === targets.length))
 				note(`Scanning ranks… ${done}/${targets.length}`);
@@ -1084,7 +1160,8 @@ class StatsHandler {
 			elapsed: (Date.now() - t0) / 1000,
 			sumRank,
 			sumPct: 0,
-			pctCount: 0
+			pctCount: 0,
+			groups: [0, 0, 0, 0, 0, 0] // filled in phase 2 (needs board totals)
 		};
 		$.Msg(
 			`[Stats] runRankScan: ${key} phase 1 done — ranked ${ranked.length}/${targets.length}, ` +
@@ -1092,18 +1169,35 @@ class StatsHandler {
 		);
 		render();
 
-		// Phase 2: leaderboard totals → Avg %.
+		// Phase 2: leaderboard totals → Avg % + group rankings (both need each board's size).
 		if (ranked.length > 0) {
 			const pcts: number[] = [];
+			const groups = [0, 0, 0, 0, 0, 0];
 			await this.pool(ranked, 10, async (r) => {
-				const total = await this.fetchTotal(r.mapID, r.gm, r.style);
-				if (total > 0) pcts.push((r.rank / total) * 100);
+				const { total, wrTime } = await this.fetchTotal(r.mapID, r.gm, r.style);
+				if (gen !== rankGen) return;
+				const pmKey = this.perMapKey(r.mapID, r.gm, r.style);
+				const pm = perMapRank[pmKey];
+				if (pm) {
+					pm.total = total > 0 ? total : null;
+					pm.wrTime = wrTime; // rank-1 time → per-map WR diff
+				}
+				if (total > 0) {
+					pcts.push((r.rank / total) * 100);
+					// WR (rank 1) and Top 10 are their own tiers above the groups — don't bucket them as G1.
+					if (r.rank > 10) {
+						const g = this.bestGroup(r.rank, total); // 1..6, or 0 if below G6
+						if (g >= 1) groups[g - 1]++;
+					}
+				}
+				this.updateTierRankRow(pmKey); // now has group + WR diff for this map's row
 			});
 			if (superseded()) return;
 			const res = rankResults[key];
 			res.sumPct = pcts.reduce((a, p) => a + p, 0);
 			res.pctCount = pcts.length;
 			res.avgPct = pcts.length ? res.sumPct / pcts.length : null;
+			res.groups = groups;
 			res.pctPending = false;
 			res.elapsed = (Date.now() - t0) / 1000;
 			render();
@@ -1123,9 +1217,18 @@ class StatsHandler {
 		return this.aggregateResults(keys);
 	}
 
+	/** Best (lowest-numbered) group 1..6 a rank earns on a board of `total`, or 0 if worse than G6. */
+	bestGroup(rank: number, total: number): number {
+		for (let i = 0; i < GROUP_DEFS.length; i++) {
+			const def = GROUP_DEFS[i];
+			if (rank <= Math.max(total * def.pct + 10, def.floor)) return i + 1;
+		}
+		return 0;
+	}
+
 	/** Sum a set of cached per-filter results into one. Missing keys → still scanning (pctPending). */
 	aggregateResults(keys: string[]): RankResult {
-		const agg: RankResult = { ...EMPTY_RANK, pctPending: false };
+		const agg: RankResult = { ...EMPTY_RANK, pctPending: false, groups: [0, 0, 0, 0, 0, 0] };
 		for (const key of keys) {
 			const r = rankResults[key];
 			if (!r) {
@@ -1141,6 +1244,7 @@ class StatsHandler {
 			agg.sumRank += r.sumRank;
 			agg.sumPct += r.sumPct;
 			agg.pctCount += r.pctCount;
+			for (let i = 0; i < agg.groups.length; i++) agg.groups[i] += r.groups[i] ?? 0;
 			if (r.pctPending) agg.pctPending = true;
 		}
 		agg.avgRank = agg.ranked ? Math.round(agg.sumRank / agg.ranked) : 0;
@@ -1160,63 +1264,131 @@ class StatsHandler {
 			return;
 		}
 
-		const row1 = $.CreatePanel('Panel', body, '', { style: 'flow-children: right; width: 100%;' });
-		this.makeTile(row1, 'WRs', `${r.wr}`, '#f2c14e');
-		this.makeTile(row1, 'Top 10', `${r.top10}`, C_ACCENT);
+		// The group ladder (WR · Top 10 · G1…G6) is the headline; WRs/Top 10 counts live in its first cells.
+		this.renderGroupStrip(body, r);
 
-		const row2 = $.CreatePanel('Panel', body, '', {
+		// Average rank + average percentile in small boxes below the ladder.
+		const avg = $.CreatePanel('Panel', body, '', {
 			style: 'flow-children: right; width: 100%; margin-top: 8px;'
 		});
-		this.makeTile(row2, 'Avg rank', r.ranked ? `${r.avgRank}` : '—', '#e0a86f');
+		this.makeTile(avg, 'Avg rank', r.ranked ? `${r.avgRank}` : '—', '#e0a86f');
 		this.makeTile(
-			row2,
+			avg,
 			'Avg %',
 			r.pctPending ? '…' : r.avgPct != null ? `top ${r.avgPct.toFixed(1)}%` : '—',
 			'#9aa3af'
 		);
 
-		$.CreatePanel('Label', body, '', {
-			text: r.pctPending
-				? `stats from ${r.ranked} of ${r.targets} maps · computing %…`
-				: `stats from ${r.ranked} of ${r.targets} completed maps · ${r.elapsed.toFixed(1)}s`,
-			style: 'font-size: 11px; color: #6f7885; margin-top: 8px; horizontal-align: center;'
-		});
-		// Break down the maps that produced no rank so the gap is explained, not mysterious.
-		const gap: string[] = [];
-		if (r.noEntry > 0) gap.push(`${r.noEntry} not on the current board`);
-		if (r.errors > 0) gap.push(`${r.errors} request${r.errors === 1 ? '' : 's'} failed`);
-		if (gap.length) {
-			$.CreatePanel('Label', body, '', {
-				text: gap.join(' · '),
-				style: `font-size: 11px; color: ${r.errors > 0 ? '#e0a86f' : '#6f7885'}; margin-top: 3px; horizontal-align: center; text-align: center;`
-			});
-		}
 		if (r.ranked === 0 && r.errors > 0) {
 			$.CreatePanel('Label', body, '', {
 				text: 'All requests failed — the API may be unreachable from the game.',
-				style: 'font-size: 11px; color: #e0a86f; margin-top: 4px; horizontal-align: center; text-align: center;'
+				style: 'font-size: 11px; color: #e0a86f; margin-top: 6px; horizontal-align: center; text-align: center;'
+			});
+		}
+	}
+
+	/**
+	 * Group rankings strip — the exclusive ranking ladder, best → worst: WR · Top 10 · G1 … G6. Each ranked
+	 * map lands in exactly one cell. WR (rank 1) and Top 10 (ranks 2–10) are pulled out above the numeric
+	 * groups, so a Top-10 map is counted as Top 10, never G1. WR/Top 10 come from phase 1 (rank only); the
+	 * G1…G6 counts need each board's size, so they read "…" until phase 2 finishes. Maps below G6 aren't
+	 * counted (they're "No group"). The two WR/Top 10 cells mirror the tiles above but split exclusively.
+	 */
+	renderGroupStrip(body: Panel, r: RankResult) {
+		if (r.ranked === 0) return; // no ranked maps → nothing to place
+
+		$.CreatePanel('Label', body, '', {
+			text: 'Group rankings',
+			style: 'font-size: 12px; font-weight: bold; color: #cdd5df; margin-bottom: 6px;'
+		});
+
+		// Ladder cells: WR + Top 10 (known from phase 1) then G1…G6 (pending until phase 2).
+		const cells: { label: string; count: number; color: string; pending: boolean; tip: string }[] = [
+			{ label: 'WR', count: r.wr, color: RANK_WR_COLOR, pending: false, tip: 'World records — rank 1' },
+			{
+				label: 'T10',
+				count: Math.max(0, r.top10 - r.wr),
+				color: RANK_T10_COLOR,
+				pending: false,
+				tip: 'Top 10 — ranks 2–10 (WRs excluded)'
+			}
+		];
+		for (let i = 0; i < GROUP_DEFS.length; i++) {
+			const def = GROUP_DEFS[i];
+			cells.push({
+				label: `G${i + 1}`,
+				count: r.groups[i],
+				color: GROUP_COLORS[i],
+				pending: r.pctPending,
+				tip: `G${i + 1} · best of top ${Math.round(def.pct * 100)}% + 10 or top ${def.floor} (Top 10 excluded)`
+			});
+		}
+
+		const strip = $.CreatePanel('Panel', body, '', { style: 'flow-children: right; width: 100%;' });
+		cells.forEach((c, i) => {
+			const cell = $.CreatePanel('Panel', strip, `StatsGroup${i}`, {
+				style:
+					'flow-children: down; width: fill-parent-flow(1); ' +
+					(i < cells.length - 1 ? 'margin-right: 4px; ' : '') +
+					'padding: 7px 1px; background-color: #10141a; border-radius: 6px;'
+			});
+			$.CreatePanel('Label', cell, '', {
+				text: c.label,
+				style: `font-size: 11px; font-weight: bold; color: ${c.color}; horizontal-align: center;`
+			});
+			$.CreatePanel('Label', cell, '', {
+				text: c.pending ? '…' : `${c.count}`,
+				style: 'font-size: 15px; font-weight: bold; color: #dfe5ec; horizontal-align: center; margin-top: 2px;'
+			});
+			cell.SetPanelEvent('onmouseover', () => UiToolkitAPI.ShowTextTooltip(cell.id, c.tip));
+			cell.SetPanelEvent('onmouseout', () => UiToolkitAPI.HideTextTooltip());
+		});
+
+		// Explain the ladder's total: maps placed in a tier vs. those below G6 ("No group").
+		if (!r.pctPending) {
+			const placed = r.top10 + r.groups.reduce((a, g) => a + g, 0); // top10 (incl. WR) + G1…G6
+			$.CreatePanel('Label', body, '', {
+				text: `${placed} of ${r.ranked} ranked maps placed`,
+				style: 'font-size: 11px; color: #6f7885; margin-top: 5px; horizontal-align: center;'
 			});
 		}
 	}
 
 	//#endregion
 
-	/** Right column: per-tier breakdown (clickable) + expandable scrollable map list. */
+	/** Right card, split into two columns: sub-left = style selector + per-tier bars (narrow, scrolls);
+	 *  sub-right = the map list, which now takes the full card height so it shows many more maps. */
 	fillRight(card: Panel, s: ModeStat) {
 		card.RemoveAndDeleteChildren();
+		tierBtns = [];
+		tierMapHolder = null;
+		tierRankRows = [];
 
-		$.CreatePanel('Label', card, '', {
-			text: 'Completion by tier',
-			style: 'font-size: 20px; font-weight: bold; color: #ffffff; margin-bottom: 4px;'
+		const cols = $.CreatePanel('Panel', card, '', {
+			style: 'flow-children: right; width: 100%; height: 100%;'
 		});
-		$.CreatePanel('Label', card, '', {
-			text: 'Click a tier to list its maps',
-			style: 'font-size: 12px; color: #8a93a0; margin-bottom: 14px;'
+		const subLeft = $.CreatePanel('Panel', cols, '', {
+			style: 'flow-children: down; width: 330px; height: 100%; margin-right: 16px; overflow: squish scroll;'
+		});
+		const subRight = $.CreatePanel('Panel', cols, '', {
+			style: 'flow-children: down; width: fill-parent-flow(1); height: 100%;'
+		});
+
+		// Sub-left: the mode's style selector (moved here from the page top), then the per-tier bars.
+		this.renderStyles(subLeft);
+
+		$.CreatePanel('Label', subLeft, '', {
+			text: 'Completion by tier',
+			style: 'font-size: 18px; font-weight: bold; color: #ffffff; margin-bottom: 4px;'
+		});
+		$.CreatePanel('Label', subLeft, '', {
+			text: 'Click a tier to filter the maps',
+			style: 'font-size: 12px; color: #8a93a0; margin-bottom: 12px;'
 		});
 
 		const tiers = [...s.tiers.keys()].sort((a, b) => a - b);
 		if (tiers.length === 0) {
-			$.CreatePanel('Label', card, '', {
+			$.CreatePanel('Label', subLeft, '', {
 				text: 'No tiered maps for this filter.',
 				style: 'font-size: 14px; color: #8a93a0;'
 			});
@@ -1225,12 +1397,11 @@ class StatsHandler {
 
 		for (const t of tiers) {
 			const ts = s.tiers.get(t)!;
-			const on = selectedTier === t;
-			const row = $.CreatePanel('Panel', card, `StatsTierRow${t}`, {
+			const row = $.CreatePanel('Panel', subLeft, `StatsTierRow${t}`, {
+				// Colours are toggled by styleTierRow so a click can restyle in place (no recreation).
 				style:
-					'flow-children: right; width: 100%; padding: 6px 8px; margin-bottom: 6px; border-radius: 6px; ' +
-					`background-color: ${on ? '#1b2530' : '#00000000'}; ` +
-					`border-left: 3px solid ${on ? C_ACCENT : '#00000000'};`
+					'flow-children: right; width: 100%; padding: 5px 8px; margin-bottom: 1px; border-radius: 6px; ' +
+					'background-color: #00000000; border-left: 3px solid #00000000;'
 			});
 			row.SetPanelEvent('onactivate', () => this.selectTier(t));
 			row.SetPanelEvent('onmouseover', () =>
@@ -1238,34 +1409,45 @@ class StatsHandler {
 			);
 			row.SetPanelEvent('onmouseout', () => UiToolkitAPI.HideTextTooltip());
 
-			$.CreatePanel('Label', row, '', {
+			const tierLabel = $.CreatePanel('Label', row, '', {
 				text: `Tier ${t}`,
-				style: `width: 60px; font-size: 15px; color: ${on ? '#ffffff' : '#cdd5df'}; vertical-align: center;`
+				style: 'width: 52px; font-size: 14px; color: #cdd5df; vertical-align: center;'
 			});
 			const mid = $.CreatePanel('Panel', row, '', {
-				style: 'flow-children: down; width: fill-parent-flow(1); margin: 0 14px; vertical-align: center;'
+				style: 'flow-children: down; width: fill-parent-flow(1); margin: 0 10px; vertical-align: center;'
 			});
 			this.makeBar(mid, this.frac(ts.completed, ts.total), 10);
 			$.CreatePanel('Label', row, '', {
 				text: `${ts.completed}/${ts.total}  ·  ${this.pct(ts.completed, ts.total)}%`,
-				style: 'width: 120px; font-size: 14px; color: #b8c0cc; text-align: right; vertical-align: center;'
+				style: 'width: 104px; font-size: 13px; color: #b8c0cc; text-align: right; vertical-align: center;'
 			});
+
+			tierBtns.push({ tier: t, row, label: tierLabel });
+			this.styleTierRow(row, tierLabel, selectedTier === t);
 		}
 
-		if (selectedTier != null && s.tiers.has(selectedTier)) {
-			this.renderTierMaps(card, selectedTier);
+		// Sub-right: the map list fills the full column height (persistent holder — a tier click only
+		// refills this + restyles the rows, so the hovered tier row is never recreated → no tooltip flicker).
+		tierMapHolder = $.CreatePanel('Panel', subRight, 'StatsTierMapHolder', {
+			style: 'flow-children: down; width: 100%; height: 100%;'
+		});
+		// Nothing selected → list every tier's maps; a tier selected → just that tier's.
+		if (selectedTier == null || s.tiers.has(selectedTier)) {
+			this.renderTierMaps(tierMapHolder, selectedTier);
 		}
 	}
 
-	/** The pop-up box under the tier list: scrollable maps for the selected tier, each with a play button. */
-	renderTierMaps(card: Panel, tier: number) {
+	/** The box under the tier list: scrollable maps for the selected tier, or every tier when `tier` is
+	 *  null (nothing selected). Each row has a play button + (async) rank detail. */
+	renderTierMaps(parent: Panel, tier: number | null) {
 		const isAll = selectedMode === ALL_MODES;
+		const showTier = tier == null; // list spans tiers → show each map's tier
 		const entries = this.mapsInTier(tier);
 		const done = entries.filter((e) => e.done).length;
 
-		const box = $.CreatePanel('Panel', card, '', {
+		const box = $.CreatePanel('Panel', parent, '', {
 			style:
-				'flow-children: down; width: 100%; height: fill-parent-flow(1); margin-top: 12px; padding: 12px; ' +
+				'flow-children: down; width: 100%; height: 100%; padding: 12px; ' +
 				`background-color: #10141a; border: 1px solid ${C_BORDER}; border-radius: 8px;`
 		});
 
@@ -1273,7 +1455,7 @@ class StatsHandler {
 			style: 'flow-children: right; width: 100%; margin-bottom: 8px;'
 		});
 		$.CreatePanel('Label', head, '', {
-			text: `Tier ${tier} maps`,
+			text: tier == null ? 'All maps' : `Tier ${tier} maps`,
 			style: 'font-size: 16px; font-weight: bold; color: #ffffff; vertical-align: center;'
 		});
 		$.CreatePanel('Panel', head, '', { class: 'w-fill' });
@@ -1299,6 +1481,13 @@ class StatsHandler {
 					`width: 10px; height: 10px; border-radius: 5px; margin-right: 10px; vertical-align: center; ` +
 					`background-color: ${e.done ? '#5bd6a0' : '#4a5462'};`
 			});
+			// When the list spans tiers (nothing selected), tag each map with its tier.
+			if (showTier) {
+				$.CreatePanel('Label', row, '', {
+					text: `T${e.tier}`,
+					style: 'width: 30px; font-size: 12px; color: #7d8794; text-align: center; vertical-align: center; margin-right: 8px;'
+				});
+			}
 			$.CreatePanel('Label', row, '', {
 				text: e.name,
 				style: `width: fill-parent-flow(1); font-size: 14px; color: ${e.done ? '#dfe5ec' : '#aeb6c2'}; vertical-align: center; text-overflow: ellipsis;`
@@ -1310,6 +1499,17 @@ class StatsHandler {
 					style: 'width: 120px; font-size: 12px; color: #7d8794; text-align: right; vertical-align: center; margin-right: 10px;'
 				});
 			}
+
+			// Per-map rank detail (group · placement · time · WR diff). Filled from cache now if the rank
+			// scan already covered this map, otherwise left blank and filled in place when the scan lands —
+			// this never blocks the tier list from showing. The fixed width reserves the columns so rows
+			// don't shift when the data arrives.
+			const rankInfo = $.CreatePanel('Panel', row, '', {
+				style: 'flow-children: right; width: 310px; vertical-align: center; margin-right: 10px;'
+			});
+			const rankKey = this.perMapKey(e.data.staticData.id, gm, e.style);
+			this.fillRankInfo(rankInfo, perMapRank[rankKey]);
+			tierRankRows.push({ key: rankKey, panel: rankInfo });
 
 			const mapID = e.data.staticData.id;
 			const play = $.CreatePanel('Panel', row, `StatsPlay${mapID}_${gm}`, {
@@ -1403,12 +1603,16 @@ class StatsHandler {
 		$.Schedule(1, tick);
 	}
 
-	/** Maps in the selected tier (one mode, or all modes in the "All" view), incomplete first then alphabetical. */
-	mapsInTier(tier: number): { data: MapCacheAPI.MapData; name: string; done: boolean; mode: Gamemode }[] {
+	/** Maps in a tier (one mode, or all modes in the "All" view) — or every tier when `tier` is null.
+	 *  Sorted by tier, then incomplete first, then alphabetical. */
+	mapsInTier(
+		tier: number | null
+	): { data: MapCacheAPI.MapData; name: string; done: boolean; mode: Gamemode; style: Style; tier: number }[] {
 		const maps = scanCache ?? [];
 		const isAll = selectedMode === ALL_MODES;
 		const modes = isAll ? available : [selectedMode as Gamemode];
-		const out: { data: MapCacheAPI.MapData; name: string; done: boolean; mode: Gamemode }[] = [];
+		const out: { data: MapCacheAPI.MapData; name: string; done: boolean; mode: Gamemode; style: Style; tier: number }[] =
+			[];
 
 		for (const gm of modes) {
 			const style = isAll
@@ -1419,7 +1623,8 @@ class StatsHandler {
 				if (data.staticData.status !== MapStatus.APPROVED) continue; // exclude beta/testing/submission maps
 
 				const lb = getTrack(data.staticData, gm, TrackType.MAIN, 1, style);
-				if (!lb || lb.tier !== tier) continue;
+				if (!lb || !lb.tier) continue; // need a real tier
+				if (tier != null && lb.tier !== tier) continue; // a specific tier was selected
 
 				const isRanked = lb.type === LeaderboardType.RANKED;
 				const isUnranked = lb.type === LeaderboardType.UNRANKED;
@@ -1428,13 +1633,100 @@ class StatsHandler {
 				if (rankFilter === 'unranked' && !isUnranked) continue;
 
 				const done = this.isDone(data, gm, style);
-				out.push({ data, name: data.staticData.name, done, mode: gm });
+				out.push({ data, name: data.staticData.name, done, mode: gm, style, tier: lb.tier });
 			}
 		}
 
-		out.sort((a, b) => (a.done !== b.done ? (a.done ? 1 : -1) : a.name.localeCompare(b.name)));
+		// Completed maps first, then (within each) low→high tier, then alphabetical. So the all-maps view
+		// reads: all completed by tier, then all incomplete by tier.
+		out.sort((a, b) =>
+			a.done !== b.done ? (a.done ? -1 : 1) : a.tier !== b.tier ? a.tier - b.tier : a.name.localeCompare(b.name)
+		);
 		return out;
 	}
+
+	//#region per-map rank cell (tier map list)
+
+	perMapKey(mapID: number, gm: Gamemode, style: Style): string {
+		return `${mapID}|${gm}|${style}`;
+	}
+
+	/** Refill a shown tier-map row's rank cell after its per-map data updates (no-op if it isn't shown). */
+	updateTierRankRow(key: string) {
+		const ref = tierRankRows.find((r) => r.key === key);
+		if (ref && ref.panel.IsValid()) this.fillRankInfo(ref.panel, perMapRank[key]);
+	}
+
+	/**
+	 * Fill one tier-map row's rank cell: group · placement · time · WR diff. `d` undefined = not scanned
+	 * yet (left blank, filled later by updateTierRankRow); rank null = scanned, but you're not on the
+	 * current board. Group/WR-diff need phase 2, so they read "…" until the percentile pass lands.
+	 */
+	fillRankInfo(container: Panel, d?: PerMapRank) {
+		if (!container?.IsValid()) return;
+		container.RemoveAndDeleteChildren();
+		if (!d) return; // not scanned yet — stays blank
+
+		const W_G = 76;
+		const W_R = 46;
+		const W_T = 84;
+		const W_D = 72;
+		const col = (text: string, color: string, width: number) =>
+			$.CreatePanel('Label', container, '', {
+				text,
+				style: `width: ${width}px; font-size: 13px; color: ${color}; text-align: right; vertical-align: center; margin-left: 8px;`
+			});
+
+		if (d.rank == null) {
+			// The board query came back empty — e.g. the leaderboard was re-versioned since your PB.
+			col('', '#6f7885', W_G);
+			col('—', '#6f7885', W_R);
+			col('not ranked', '#6f7885', W_T + W_D + 8);
+			return;
+		}
+
+		// Classification. WR (rank 1) and Top 10 outrank the numeric groups — a Top-10 map is marked as
+		// such, never G1. Those two need only the rank (shown at once); G#/No group waits on phase 2.
+		if (d.rank === 1) {
+			col('WR', RANK_WR_COLOR, W_G);
+		} else if (d.rank <= 10) {
+			col('TOP 10', RANK_T10_COLOR, W_G);
+		} else if (d.total != null) {
+			const g = this.bestGroup(d.rank, d.total);
+			col(g >= 1 ? `G${g}` : 'No group', g >= 1 ? GROUP_COLORS[g - 1] : '#6f7885', W_G);
+		} else {
+			col('…', '#6f7885', W_G);
+		}
+		col(`#${d.rank}`, d.rank === 1 ? RANK_WR_COLOR : '#cdd5df', W_R); // placement
+		col(d.time != null ? this.fmtTime(d.time) : '—', '#b8c0cc', W_T); // your time
+		// Gap to the WR (from the phase-2 rank-1 time). Blank for the WR itself (the group cell says WR).
+		if (d.rank === 1) {
+			col('—', '#6f7885', W_D);
+		} else if (d.wrTime != null && d.time != null) {
+			col(`+${this.fmtDiff(Math.max(0, d.time - d.wrTime))}`, '#e0a86f', W_D);
+		} else {
+			col(d.total != null ? '—' : '…', '#6f7885', W_D);
+		}
+	}
+
+	/** Seconds → `m:ss.SS` (or `ss.SS` under a minute). */
+	fmtTime(t: number): string {
+		if (t == null || !isFinite(t)) return '—';
+		const m = Math.floor(t / 60);
+		const s = t - m * 60;
+		const ss = s.toFixed(2).padStart(5, '0');
+		return m > 0 ? `${m}:${ss}` : ss;
+	}
+
+	/** A positive time delta, compact (`s.SS`, or `m:ss.SS` past a minute). */
+	fmtDiff(t: number): string {
+		if (t < 60) return t.toFixed(2);
+		const m = Math.floor(t / 60);
+		const s = t - m * 60;
+		return `${m}:${s.toFixed(2).padStart(5, '0')}`;
+	}
+
+	//#endregion
 
 	/** Segmented circular gauge (donut) drawn from rotated tick panels. */
 	renderRing(parent: Panel, frac: number, centerText: string) {

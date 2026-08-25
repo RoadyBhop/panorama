@@ -208,16 +208,56 @@ it was "broken") → don't rely on the `events` HudProcessInput; drive updates w
 ### 6a. Stats page — `layout|scripts/pages/stats/stats.{xml,ts}`, `images/stats.svg`
 Top‑nav "Stats" button (`main-menu.xml` → `navigateToPage('Stats','stats/stats')`). Chunked
 brute‑force scan of the map cache (id 1..6000), cached module‑level; **Rescan** re‑scans. Per‑gamemode
-completion by tier: header Ranked/Unranked/Both filter, a horizontal gamemode bar (+ pinned "All"
-aggregate), a per‑mode style bar, a left "general stats" card (segmented donut gauge from rotated tick
-panels, completion bar, stat tiles, ranked/unranked split) and a right per‑tier card with a clickable
-tier drill‑down that lists maps (status dot + play/download button via `handlePlayMap`, with a
-`pollDownload` poller to flip download→play). No‑flash re‑render: card boxes + bar buttons are persistent
-refs, only contents/highlights are refilled.
-- **Live leaderboard ranks** (WRs / top10 / avg rank / avg %): a background priority queue
+completion by tier. **Top layout:** row 1 = title + Preload/Rescan; row 2 = player search (left) +
+Ranked/Unranked/Both filter (`#StatsFilter`, right) on one level; then only the gamemode bar (+ pinned
+"All" aggregate). A left "general stats" card (segmented donut gauge from rotated tick panels, completion
+bar, stat tiles, ranked/unranked split, then the group‑rankings block). The **right card is two columns**
+(`fillRight`): a narrow **sub‑left** (fixed 330px, scrolls) holding the **per‑mode style selector**
+(`renderStyles` — moved here from the page top; there's no `#StatsStyleBar` any more) + the clickable
+per‑tier completion bars, and a **sub‑right** = the map list filling the **full card height** (so it shows
+many more maps). **The map list shows every tier's maps when no tier is selected** (`renderTierMaps(holder,
+null)` → `mapsInTier(null)`; rows get a `T#` badge); clicking a tier filters to it, clicking again
+deselects → all maps again. **Sort: completed maps first, then low→high tier, then name.** Rows = status
+dot + name + (async) rank cell + play/download button via `handlePlayMap` (`pollDownload` poller flips
+download→play). No‑flash re‑render: the two card boxes + gamemode/filter buttons are persistent refs; the
+right card's inner columns rebuild on mode/style/filter change (a tier click only refills the map holder +
+restyles the tier rows, via `refreshTierExpansion`).
+- **Live leaderboard ranks** (group rankings + avg rank + avg %): a background priority queue
   (`rankQueue`/`enqueueRank`/`processRankQueue`) scans EVERY gamemode via the web API (1–2 requests per
   completed map), caches per `rankKey = mode|style|filter`; **"both" and "All" are derived** by summing
-  disjoint per‑(mode,style,filter) results (each map queried once). `rankGen` guards rescans.
+  disjoint per‑(mode,style,filter) results (each map queried once). `rankGen` guards rescans. The old
+  separate "Leaderboard ranks" section (WRs/Top 10 tiles) is gone — those counts live in the ladder's
+  WR/T10 cells now; only **Avg rank** + **Avg %** remain, as small boxes under the ladder.
+- **Group rankings ladder** — the headline of the left card's rank block, best→worst:
+  **WR · T10 · G1 … G6** (+ implicit "No group"). Each completed *ranked* map lands in exactly ONE cell.
+  **WR (rank 1)** and **Top 10 (ranks 2–10)** are pulled out ABOVE the numeric groups — since every G1
+  threshold is ≥ 20, a rank ≤ 10 would otherwise always be G1, so those maps are marked WR/Top 10 instead
+  (both in the strip and per‑map). A map with rank > 10 earns group *i* if `r ≤ max(N·pct + 10, floor)` —
+  `GROUP_DEFS` = G1 (2%,20) G2 (4%,35) G3 (8%,60) G4 (16%,100) G5 (33%,150) G6 (66%,225); the floor keeps
+  small boards fair; thresholds nest so `bestGroup(rank,total)` returns the first that qualifies G1→G6.
+  The WR/T10 cell counts come from `RankResult.wr`/`top10` (phase 1, rank only); the G1…G6 counts
+  (`groups[6]`, index 0=G1, now **excluding rank ≤ 10**) need each board's total so they're computed in
+  the scan's **phase 2** and read "…" until then. All are summable, so "both"/"All" aggregate like the
+  other rank stats — but clone `groups` at every result‑creation site (a bare `{...EMPTY_RANK}` shares the
+  array). These stay separate from the cumulative **WRs**/**Top 10** tiles above (WR ⊂ Top 10 there).
+- **Per‑map rank detail in the tier map list** — clicking a tier lists its maps; each *completed* map's
+  row shows **group · placement (#rank) · your time · WR diff** on the right. Sourced from the same rank
+  scan (no extra calls): `fetchRank` now also returns your `time`; `fetchTotal` (the `take=1` percentile
+  call) also returns `data[0].time` = the **rank‑1 WR time**, so the WR diff is free. Stored in
+  `perMapRank[mapID|gm|style]` (`{rank,time,total,wrTime}`), cleared with the rank cache. The list renders
+  instantly (blank cells) and each cell is **filled in place** by `updateTierRankRow` as the scan lands —
+  it never blocks the list. Only completed maps are scan targets, so incomplete maps stay blank (you have
+  no rank). Group cell reads **WR** / **TOP 10** (rank ≤ 10, shown at once from phase 1), else **G#** /
+  **No group** (below G6) once phase 2 lands, "not ranked" when you're not on the current board. The WR‑diff
+  column is blank for the WR itself (the group cell already says WR). `tierRankRows` holds the live cell
+  refs (like the css‑map‑selector Players column).
+- **Tier‑row tooltip flicker fix / persistent tier rows.** Clicking a tier used to rebuild the whole
+  right card, recreating the hovered row — so its "Show tier X maps" hover tooltip flashed at the press
+  point for one frame (the tooltip re‑anchored to the not‑yet‑laid‑out new panel) before snapping back.
+  Fix: the tier rows are now **persistent** (`tierBtns`) and the expanded list lives in a persistent
+  `tierMapHolder`; `selectTier` → `refreshTierExpansion` only restyles rows (`styleTierRow` — toggles bg +
+  `borderColor`, since only border‑left has width) and refills the holder. The hovered row is never
+  recreated, so no flicker. Full rebuild (`fillRight`) still happens on mode/style/filter change.
 - **View another player:** header search box (id/SteamID64/steam URL/alias → `/v1/users`), fetch their
   PBs (`/v1/runs?userID&isPB`) into a `remoteDone` Set keyed `mapID|gm|tt|tn|style`; `isDone(map,…)` uses
   it when set, and `viewUid()` swaps the uid for rank fetches. "Me" resets to local.
@@ -263,8 +303,10 @@ in‑game (flip the `dYaw<0` mapping if reversed).
   `#MainMenuModel` + `#NewsPanel`), hides `.home__bottombar > .bottombar__tooltip:not(.bottombar__tooltip--css)`
   (all bottombar btns except the CSS toggle), shows `#CssMenu`. `#CssMenu` (in HomeContent, so auto‑hidden
   in pause via `.MainMenuModeOnly` and when a page opens via `home--hidden`) = a Bebas‑Neue
-  (`$font-header`) "Momentum Mod" title + list: FIND SERVER→map selector, OPTIONS→settings, STATS→stats,
-  QUIT→`onQuitButtonPressed()`. The right‑side drawer (`.drawer` — rightnav strip + lobby) is hidden in
+  (`$font-header`) "Momentum Mod" title + list: FIND MAPS→CS:S map selector (§6e), FIND LOBBIES→CS:S
+  lobby browser (§6f), OPTIONS→settings, STATS→stats, QUIT→`onQuitButtonPressed()`. (Menu items are
+  plain `.cssmenu__item` buttons — add one by copying a `<Button>` in `#CssMenu`, no SCSS needed.)
+  The right‑side drawer (`.drawer` — rightnav strip + lobby) is hidden in
   main‑menu CSS mode via `.mainmenu--css:not(.MainMenuRootPanel--PauseMenuMode)`, and its 50px strip
   reclaimed (`.mainmenu__content { margin-right: 0 }`); it stays intact in the pause menu. Escape returns
   to the menu from any page.
@@ -272,7 +314,7 @@ in‑game (flip the `dYaw<0` mapping if reversed).
 ### 6e. CS:S map selector — `pages/map-selector/css-map-selector.{ts,xml,scss}` (class `CssMapSelectorHandler`)
 A **new** main‑menu page styled like the Source engine "Server Browser" (warm desaturated greys,
 beveled light‑top/left dark‑bottom/right panels, an orange selected row). Opened from the CS:S menu's
-**FIND SERVER** button (`navigateToPage('CssMapSelector', 'map-selector/css-map-selector', false)` —
+**FIND MAPS** button (`navigateToPage('CssMapSelector', 'map-selector/css-map-selector', false)` —
 `hasBlur=false` so the CS:S background stays crisp behind the window, no dark blur backdrop) — the base
 C++ map selector (`map-selector/wrapper`) is untouched and still used by the normal top‑nav Play button.
 Layout is minimal chrome; tabs / header / rows / filters are all built in TS.
@@ -298,6 +340,29 @@ Layout is minimal chrome; tabs / header / rows / filters are all built in TS.
   maps nobody in your lobby is on. Cells update in place via kept `rowPlayerLabels` refs.
 - **Close button** dispatches the `MainMenu_ClosePage` global event (see §7 cross‑context gotcha), handled
   in `main-menu.ts` → `hideMainMenuPageContent()`.
+
+### 6f. CS:S lobby browser — `pages/lobby-list/css-lobby-list.{ts,xml,scss}` (class `CssLobbyListHandler`)
+A sibling to the CS:S map selector, opened from the CS:S menu's **FIND LOBBIES** button
+(`navigateToPage('CssLobbyList', 'lobby-list/css-lobby-list', false)`). Same Source "Server Browser"
+look (its `.csslobbies` SCSS mirrors `.cssmaps`; registered via a new `styles/pages/lobby-list/_index.scss`
+that `styles/pages/_index.scss` `@use`s). Lists the **same lobbies as the drawer's lobby tab** — but the
+drawer's `LobbyHandler` is a **different JS context**, so this page can't read its data; instead it keeps
+its **own** copy by registering for the same broadcast events (§7 — unhandled events reach every context):
+`PanoramaComponent_SteamLobby_OnListUpdated` (friends/global lists — only arrive after a
+`SteamLobbyAPI.RefreshList({})`), `_OnDataUpdated` (our `current` lobby, arrives automatically while in
+one), `_OnLobbyStateChanged` (LEAVE clears `current`). On open (root `onload` + a `MainMenuPageShown`
+handler) it calls `RefreshList({})` (no‑op on the C++ 10s cooldown → keeps the existing list).
+- **Rows** de‑dupe across the three lists (`current`/`friends`/`global`) by lobby id and sort by member
+  count desc. **Columns:** Lobby (owner name via `#Lobby_Owner`+`FriendsAPI.GetNameForXUID`, or "Map Lobby"
+  — tinted — for `is_map_lobby===1`; mirrors the drawer's `getLobbyName` but drops the empty
+  `MapCacheAPI.GetMapName()` parenthetical), Type (`#Lobby_Type_*` from `LobbyProperties`), Source
+  (Yours/Friends/Global), Players (`members/limit`). Header is static (no sort). **Bottom bar:** count +
+  Create (same `lobby-create.xml` popup the drawer opens) + Refresh + **Join** (disabled unless a lobby is
+  selected and it isn't the one you're in). Join replicates the drawer's leave‑and‑join confirm
+  (`#Lobby_TransferWarning`/`#Lobby_LeaveWarning` → `SteamLobbyAPI.Leave()`+`Join(id)`). Double‑click a row =
+  Join; Esc/X closes via `MainMenu_ClosePage`. The lobby id (the list's record key) is what `Join` takes.
+- **Caveat:** in main‑menu CS:S mode the real drawer is hidden, so after joining there's no in‑CS:S lobby
+  details/chat UI — toggle CSS off (or use the pause menu) to see the lobby. Joining still works.
 
 ---
 
@@ -327,9 +392,13 @@ panorama/
   layout/hud/{strafe-trainer,strafe-sync,hud}.xml
   layout/pages/{stats/stats,main-menu/main-menu}.xml
   layout/pages/map-selector/css-map-selector.xml        (CS:S map selector — §6e)
+  layout/pages/lobby-list/css-lobby-list.xml            (CS:S lobby browser — §6f)
   scripts/hud/{strafe-trainer,strafe-sync}.ts
   scripts/pages/{stats/stats,main-menu/main-menu}.ts
   scripts/pages/map-selector/css-map-selector.ts        (CS:S map selector — §6e)
+  scripts/pages/lobby-list/css-lobby-list.ts            (CS:S lobby browser — §6f)
+  scripts/pages/drawer/lobby.ts        (drawer lobby tab — shares the SteamLobby events §6f reuses)
+  scripts/common/online.ts             (Lobby/LobbyType/LobbyProperties types used by §6f)
   scripts/util/event-definition.ts        (MainMenu_ClosePage cross-context event — §7)
   scripts/common/{hud-customizer,buttons,leaderboard,maps}.ts
   scripts/common/web/enums/*        (Gamemode, Style, LeaderboardType, TrackType, MapStatus, …)
@@ -337,6 +406,7 @@ panorama/
   scripts/types/shared/panels.d.ts       (UICanvas, base panel props)
   styles/pages/main-menu.scss, styles/hud/{strafe-trainer,strafe-sync}.scss, styles/config.scss
   styles/pages/map-selector/css-map-selector.scss       (CS:S map selector — §6e; in _index.scss)
+  styles/pages/lobby-list/css-lobby-list.scss           (CS:S lobby browser — §6f; own _index.scss)
   images/backgrounds/background01.dds, images/game-logos/css.png
 momentum/cfg/hud/hud_default.kv3          (customizer defaults — base game, restart to apply)
 momentum/resource/momentum_english.txt    (localization — base game, restart to apply)

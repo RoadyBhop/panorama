@@ -189,7 +189,10 @@
 								<Label class="cssmenu__title" text="Momentum Mod" />
 								<Panel class="cssmenu__list">
 									<Button class="cssmenu__item" onactivate="MainMenuHandler.navigateToPage('CssMapSelector', 'map-selector/css-map-selector', false)">
-										<Label class="cssmenu__item-text" text="FIND SERVER" />
+										<Label class="cssmenu__item-text" text="FIND MAPS" />
+									</Button>
+									<Button class="cssmenu__item" onactivate="MainMenuHandler.navigateToPage('CssLobbyList', 'lobby-list/css-lobby-list', false)">
+										<Label class="cssmenu__item-text" text="FIND LOBBIES" />
 									</Button>
 									<Button class="cssmenu__item" onactivate="MainMenuHandler.navigateToPage('Settings', 'settings/settings')">
 										<Label class="cssmenu__item-text" text="OPTIONS" />

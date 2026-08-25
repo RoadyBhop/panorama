@@ -1,0 +1,252 @@
+@use '../../config' as *;
+
+// Source-engine "Server Browser" styled lobby browser, opened from the CS:S main menu's FIND LOBBIES.
+// Deliberately matches the CS:S map selector (css-map-selector.scss): warm desaturated olive-greys,
+// beveled light-top/left dark-bottom/right panels, engraved text, an orange selected row.
+
+$css-window-top: rgba(125, 124, 121);
+$css-window-bot: rgba(125, 124, 121);
+$css-titlebar: rgba(125, 124, 121);
+$css-panel: rgba(91, 90, 88); // list body, slightly see-through
+$css-head: rgba(91, 90, 88); // column header strip
+$css-row-b: rgba(0, 0, 0, 0.1); // odd-row subtle darkening
+$css-orange: #d9871f;
+$css-orange-text: #14120b;
+$css-text: #ecece3;
+$css-text-dim: #c2c2b5;
+$css-line-dark: rgba(0, 0, 0, 0.45);
+$css-line-light: rgba(255, 255, 255, 0.24);
+$css-engrave: 0px 1px 0px rgba(0, 0, 0, 0.4);
+
+// Header + rows share the same height; per-column widths live in the COLS array in the .ts.
+$row-height: 26px;
+
+.csslobbies-page {
+	flow-children: down;
+	padding: 30px;
+}
+
+.csslobbies {
+	flow-children: down;
+	width: 100%;
+	max-width: 1100px;
+	height: 100%;
+	horizontal-align: middle;
+
+	background-color: gradient(linear, 0% 0%, 0% 100%, from($css-window-top), to($css-window-bot));
+	border-top: 1px solid $css-line-light;
+	border-left: 1px solid $css-line-light;
+	border-right: 1px solid $css-line-dark;
+	border-bottom: 1px solid $css-line-dark;
+	box-shadow: 0 4px 24px 2px rgba(0, 0, 0, 0.75);
+	padding: 4px;
+
+	&__titlebar {
+		flow-children: right;
+		width: 100%;
+		height: 30px;
+		background-color: $css-titlebar;
+		padding: 0 4px 0 10px;
+		border-bottom: 1px solid $css-line-dark;
+	}
+
+	&__title {
+		width: fill-parent-flow(1);
+		font-family: $font;
+		font-size: 16px;
+		font-weight: bold;
+		color: $css-text;
+		text-shadow: $css-engrave;
+		vertical-align: center;
+	}
+
+	&__close {
+		width: 24px;
+		height: 24px;
+		vertical-align: center;
+		horizontal-align: right;
+		padding: 4px;
+		border-radius: 2px;
+		transition: background-color 0.1s ease-in-out 0s;
+
+		&:hover {
+			background-color: $red;
+			sound: 'UIPanorama.ButtonRollover';
+		}
+	}
+
+	&__close-icon {
+		width: 100%;
+		height: 100%;
+		color: $css-text;
+		wash-color: $css-text;
+	}
+
+	// --- Column header ---
+	&__head {
+		flow-children: right;
+		width: 100%;
+		height: $row-height;
+		margin-top: 6px;
+		background-color: $css-head;
+		border-top: 1px solid $css-line-light;
+		border-bottom: 1px solid $css-line-dark;
+	}
+
+	&__head-cell {
+		flow-children: right;
+		height: 100%;
+		padding: 0 8px;
+		vertical-align: middle;
+		border-right: 1px solid $css-line-dark;
+	}
+
+	&__head-text {
+		width: 100%;
+		font-family: $font;
+		font-size: 13px;
+		font-weight: bold;
+		color: $css-text;
+		text-shadow: $css-engrave;
+		vertical-align: center;
+		overflow: squish;
+		text-overflow: ellipsis;
+	}
+
+	// --- List body ---
+	&__listwrap {
+		width: 100%;
+		height: fill-parent-flow(1);
+		background-color: $css-panel;
+		border-left: 1px solid $css-line-dark;
+		border-right: 1px solid $css-line-dark;
+		border-bottom: 1px solid $css-line-dark;
+	}
+
+	&__list {
+		flow-children: down;
+		width: 100%;
+		height: 100%;
+		overflow: squish scroll;
+	}
+
+	&__row {
+		flow-children: right;
+		width: 100%;
+		height: $row-height;
+		transition: background-color 0.05s ease-in-out 0s;
+
+		&:hover {
+			background-color: rgba(255, 255, 255, 0.11);
+		}
+
+		&--odd {
+			background-color: $css-row-b;
+		}
+
+		&--selected {
+			background-color: $css-orange;
+
+			&:hover {
+				background-color: $css-orange;
+			}
+		}
+	}
+
+	&__cell {
+		height: 100%;
+		padding: 0 8px;
+		vertical-align: middle;
+		overflow: squish;
+
+		.csslobbies__row--selected & {
+			color: $css-orange-text;
+		}
+	}
+
+	&__cell-text {
+		width: 100%;
+		font-family: $font;
+		font-size: 13px;
+		color: $css-text;
+		text-shadow: $css-engrave;
+		vertical-align: center;
+		overflow: squish;
+		text-overflow: ellipsis;
+
+		.csslobbies__row--selected & {
+			color: $css-orange-text;
+			text-shadow: none;
+		}
+	}
+
+	// Map lobbies get a subtle tint so they read differently from player lobbies.
+	&__cell-text--map {
+		color: #cdbf8a;
+	}
+
+	&__status {
+		font-family: $font;
+		font-size: 14px;
+		color: $css-text-dim;
+		padding: 10px;
+		horizontal-align: middle;
+	}
+
+	// --- Bottom bar: count + buttons ---
+	&__bottom {
+		flow-children: right;
+		width: 100%;
+		height: 40px;
+		margin-top: 6px;
+		padding: 0 4px;
+		vertical-align: middle;
+	}
+
+	&__count {
+		font-family: $font;
+		font-size: 13px;
+		color: $css-text-dim;
+		vertical-align: center;
+		margin-left: 4px;
+	}
+
+	&__btn {
+		flow-children: right;
+		height: 28px;
+		padding: 0 20px;
+		margin-left: 8px;
+		horizontal-align: right;
+		vertical-align: center;
+		background-color: $css-titlebar;
+		border-top: 1px solid $css-line-light;
+		border-left: 1px solid $css-line-light;
+		border-right: 1px solid $css-line-dark;
+		border-bottom: 1px solid $css-line-dark;
+		transition: background-color 0.1s ease-in-out 0s;
+
+		&:hover {
+			sound: 'UIPanorama.ButtonRollover';
+		}
+
+		&:disabled {
+			background-color: $css-panel;
+		}
+
+		&--connect:not(:disabled) .csslobbies__btn-text {
+			font-weight: bold;
+		}
+	}
+
+	&__btn-text {
+		font-family: $font;
+		font-size: 14px;
+		color: $css-text;
+		text-shadow: $css-engrave;
+		vertical-align: center;
+
+		.csslobbies__btn:disabled & {
+			color: #8f8f84;
+		}
+	}
+}
