@@ -350,17 +350,14 @@ class MainMenuHandler implements OnPanelLoad {
 	}
 
 	/**
-	 * Toggles the custom CSS (background01) static background on/off. Off reverts to the light/dark
-	 * background matching the system preference.
+	 * Toggles the custom CSS (background01) static background on/off. Turning it off always drops to the
+	 * dark theme.
 	 */
 	toggleCssBackground() {
 		const isCss = Number.parseInt($.persistentStorage.getItem('settings.mainMenuBackground')) === BackgroundMode.CSS;
-		$.persistentStorage.setItem(
-			'settings.mainMenuBackground',
-			isCss ? ($.SystemInDarkMode() ? BackgroundMode.DARK : BackgroundMode.LIGHT) : BackgroundMode.CSS
-		);
+		$.persistentStorage.setItem('settings.mainMenuBackground', isCss ? BackgroundMode.DARK : BackgroundMode.CSS);
 		this.setMainMenuBackground();
-		$.PlaySoundEvent(isCss ? 'MenuThemeLight' : 'MenuThemeDark');
+		$.PlaySoundEvent('MenuThemeDark');
 	}
 
 	/*
