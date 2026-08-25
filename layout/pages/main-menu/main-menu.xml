@@ -184,6 +184,24 @@
 								<Frame id="NewsPanel" class="home__newspanel" src="file://{resources}/layout/pages/main-menu/news.xml" />
 								<ModelPanel id="MainMenuModel" class="home__modelpanel" src="models/custom_props/hd_logo.mdl" cubemap="cubemaps/cubemap_menu_model_bg.hdr" antialias="true" mouse_rotate="true" />
 							</Panel>
+							<!-- CS:S-style menu, shown only when the CSS background is enabled (via the mainmenu css class). -->
+							<Panel id="CssMenu" class="cssmenu">
+								<Label class="cssmenu__title" text="Momentum Mod" />
+								<Panel class="cssmenu__list">
+									<Button class="cssmenu__item" onactivate="MainMenuHandler.navigateToPage('CssMapSelector', 'map-selector/css-map-selector', false)">
+										<Label class="cssmenu__item-text" text="FIND SERVER" />
+									</Button>
+									<Button class="cssmenu__item" onactivate="MainMenuHandler.navigateToPage('Settings', 'settings/settings')">
+										<Label class="cssmenu__item-text" text="OPTIONS" />
+									</Button>
+									<Button class="cssmenu__item" onactivate="MainMenuHandler.navigateToPage('Stats', 'stats/stats')">
+										<Label class="cssmenu__item-text" text="STATS" />
+									</Button>
+									<Button class="cssmenu__item" onactivate="MainMenuHandler.onQuitButtonPressed()">
+										<Label class="cssmenu__item-text" text="QUIT" />
+									</Button>
+								</Panel>
+							</Panel>
 							<Panel class="home__bottombar bottombar">
 								<TooltipPanel class="bottombar__tooltip" tooltip="#MainMenu_Button_MainSite">
 									<Button class="bottombar__button" onactivate="SteamOverlayAPI.OpenURL('https://momentum-mod.org/')">
@@ -216,6 +234,11 @@
 								<TooltipPanel class="bottombar__tooltip h-align-right" tooltip="#MainMenu_Button_SwitchBackground">
 									<Button class="bottombar__button" onactivate="MainMenuHandler.toggleBackgroundLightDark()">
 										<Image class="bottombar__icon" src="file://{images}/theme-light-dark.svg" textureheight="64" />
+									</Button>
+								</TooltipPanel>
+								<TooltipPanel class="bottombar__tooltip bottombar__tooltip--css h-align-right" tooltip="#MainMenu_Button_CssBackground">
+									<Button class="bottombar__button" onactivate="MainMenuHandler.toggleCssBackground()">
+										<Image class="bottombar__icon" src="file://{images}/game-logos/css.png" textureheight="64" />
 									</Button>
 								</TooltipPanel>
 							</Panel>

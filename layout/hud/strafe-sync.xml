@@ -2,15 +2,16 @@
 	<styles>
 		<include src="file://{resources}/styles/main.scss" />
 	</styles>
-	
+
 	<scripts>
 		<include type="module" src="file://{scripts}/hud/strafe-sync.ts" />
 	</scripts>
-	
-	<Panel class="strafesync">
-		<Label text="{s:sync_value}" id="SyncLabel" class="h-align-center v-align-center text-align-center progressbar-hudmeter__label" />
-		<ConVarEnabler class="strafesync__bar-wrapper" convar="mom_hud_strafesync_drawbar" togglevisibility="true">
-			<ProgressBar id="SyncProgressBar" min="0" max="100" class="h-align-center progressbar-hudmeter" />
-		</ConVarEnabler>
+
+	<!-- Strafe Offsets (sync trainer): history of key↔mouse timing at each strafe keyswitch. -->
+	<Panel class="strafeoffset">
+		<Panel id="OffsetArea" class="strafeoffset__area">
+			<UICanvas id="OffsetCanvas" class="strafeoffset__canvas" />
+		</Panel>
+		<Label id="OffsetText" class="strafeoffset__text" text="" />
 	</Panel>
 </root>

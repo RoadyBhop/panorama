@@ -1,0 +1,387 @@
+@use '../../config' as *;
+
+// Source-engine "Server Browser" styled map selector, opened from the CS:S main menu.
+// Light, warm desaturated olive-grey and semi-transparent (the crisp CS:S background bleeds through),
+// beveled panels (light top/left, dark bottom/right), engraved text, an orange selected row —
+// matching CS:S's GameUI server list rather than a dark modern theme.
+
+$css-window-top: rgba(125, 124, 121);
+$css-window-bot: rgba(125, 124, 121);
+$css-titlebar: rgba(125, 124, 121);
+$css-panel: rgba(91, 90, 88); // list body, slightly see-through
+$css-head: rgba(91, 90, 88); // column header strip (lighter, raised)
+$css-row-b: rgba(0, 0, 0, 0.1); // odd-row subtle darkening (even rows use the panel bg)
+$css-tab: rgba(125, 124, 121);
+$css-tab-hover: rgba(125, 124, 121);
+$css-orange: #d9871f;
+$css-orange-text: #14120b;
+$css-text: #ecece3;
+$css-text-dim: #c2c2b5;
+$css-line-dark: rgba(0, 0, 0, 0.45);
+$css-line-light: rgba(255, 255, 255, 0.24);
+$css-engrave: 0px 1px 0px rgba(0, 0, 0, 0.4); // subtle dark text-shadow for the engraved Source look
+
+// Header + rows share the same height; per-column widths live in the COLS array in the .ts.
+$row-height: 26px;
+
+.cssmaps-page {
+	// Sit the window on the dark page blur backdrop.
+	flow-children: down;
+	padding: 30px;
+}
+
+.cssmaps {
+	flow-children: down;
+	width: 100%;
+	max-width: 1500px;
+	height: 100%;
+	horizontal-align: middle;
+
+	background-color: gradient(linear, 0% 0%, 0% 100%, from($css-window-top), to($css-window-bot));
+	border-top: 1px solid $css-line-light;
+	border-left: 1px solid $css-line-light;
+	border-right: 1px solid $css-line-dark;
+	border-bottom: 1px solid $css-line-dark;
+	box-shadow: 0 4px 24px 2px rgba(0, 0, 0, 0.75);
+	padding: 4px;
+
+	&__titlebar {
+		flow-children: right;
+		width: 100%;
+		height: 30px;
+		background-color: $css-titlebar;
+		padding: 0 4px 0 10px;
+		border-bottom: 1px solid $css-line-dark;
+	}
+
+	&__title {
+		width: fill-parent-flow(1);
+		font-family: $font;
+		font-size: 16px;
+		font-weight: bold;
+		color: $css-text;
+		text-shadow: $css-engrave;
+		vertical-align: center;
+	}
+
+	&__close {
+		width: 24px;
+		height: 24px;
+		vertical-align: center;
+		horizontal-align: right;
+		padding: 4px;
+		border-radius: 2px;
+		transition: background-color 0.1s ease-in-out 0s;
+
+		&:hover {
+			background-color: $red;
+			sound: 'UIPanorama.ButtonRollover';
+		}
+	}
+
+	&__close-icon {
+		width: 100%;
+		height: 100%;
+		color: $css-text;
+		wash-color: $css-text;
+	}
+
+	// --- Gamemode tab row ---
+	&__tabs {
+		flow-children: right;
+		width: 100%;
+		height: 32px;
+		margin-top: 6px;
+		padding: 0 4px;
+		overflow: scroll noclip;
+	}
+
+	&__tab {
+		flow-children: right;
+		height: 30px;
+		padding: 0 12px;
+		margin-right: 2px;
+		vertical-align: bottom;
+		background-color: $css-tab;
+		border-top: 1px solid $css-line-light;
+		border-left: 1px solid $css-line-light;
+		border-right: 1px solid $css-line-dark;
+		transition: background-color 0.1s ease-in-out 0s;
+
+		&:hover {
+			sound: 'UIPanorama.ButtonRollover';
+		}
+
+		// Active tab is visually connected to the list below it (matches the header/list colour).
+		&--active {
+			background-color: $css-head;
+			height: 32px;
+			sound: 'UIPanorama.ButtonPress';
+		}
+	}
+
+	&__tab-icon {
+		width: 18px;
+		height: 18px;
+		vertical-align: center;
+		margin-right: 7px;
+		color: $css-text;
+		wash-color: $css-text-dim;
+
+		.cssmaps__tab--active & {
+			wash-color: $css-text;
+		}
+	}
+
+	&__tab-label {
+		font-family: $font;
+		font-size: 14px;
+		color: $css-text-dim;
+		text-shadow: $css-engrave;
+		vertical-align: center;
+
+		.cssmaps__tab--active & {
+			color: $white;
+			font-weight: bold;
+		}
+	}
+
+	// --- Column header ---
+	&__head {
+		flow-children: right;
+		width: 100%;
+		height: $row-height;
+		background-color: $css-head;
+		border-top: 1px solid $css-line-light;
+		border-bottom: 1px solid $css-line-dark;
+	}
+
+	&__head-cell {
+		flow-children: right;
+		height: 100%;
+		padding: 0 8px;
+		vertical-align: middle;
+		border-right: 1px solid $css-line-dark;
+		transition: background-color 0.1s ease-in-out 0s;
+
+		&:hover {
+			background-color: rgba(255, 255, 255, 0.06);
+		}
+	}
+
+	&__head-text {
+		font-family: $font;
+		font-size: 13px;
+		font-weight: bold;
+		color: $css-text;
+		text-shadow: $css-engrave;
+		vertical-align: center;
+		overflow: squish;
+		text-overflow: ellipsis;
+	}
+
+	&__head-arrow {
+		font-family: $font;
+		font-size: 11px;
+		color: $css-orange;
+		vertical-align: center;
+		margin-left: 4px;
+	}
+
+	// --- List body ---
+	&__listwrap {
+		width: 100%;
+		height: fill-parent-flow(1);
+		background-color: $css-panel;
+		border-left: 1px solid $css-line-dark;
+		border-right: 1px solid $css-line-dark;
+		border-bottom: 1px solid $css-line-dark;
+	}
+
+	&__list {
+		flow-children: down;
+		width: 100%;
+		height: 100%;
+		overflow: squish scroll;
+	}
+
+	&__row {
+		flow-children: right;
+		width: 100%;
+		height: $row-height;
+		transition: background-color 0.05s ease-in-out 0s;
+
+		&:hover {
+			background-color: rgba(255, 255, 255, 0.11);
+		}
+
+		&--odd {
+			background-color: $css-row-b;
+		}
+
+		&--selected {
+			background-color: $css-orange;
+
+			&:hover {
+				background-color: $css-orange;
+			}
+		}
+	}
+
+	&__cell {
+		height: 100%;
+		padding: 0 8px;
+		vertical-align: middle;
+		overflow: squish;
+
+		.cssmaps__row--selected & {
+			color: $css-orange-text;
+		}
+	}
+
+	&__cell-text {
+		width: 100%;
+		font-family: $font;
+		font-size: 13px;
+		color: $css-text;
+		text-shadow: $css-engrave;
+		vertical-align: center;
+		overflow: squish;
+		text-overflow: ellipsis;
+
+		.cssmaps__row--selected & {
+			color: $css-orange-text;
+			text-shadow: none;
+		}
+	}
+
+	// Beta rows get a subtle tint on the name so they read as not-yet-approved.
+	&__cell-text--beta {
+		color: #cdbf8a;
+	}
+
+	&__status {
+		font-family: $font;
+		font-size: 14px;
+		color: $css-text-dim;
+		padding: 10px;
+		horizontal-align: middle;
+	}
+
+	// --- Bottom bar: filters + buttons ---
+	&__bottom {
+		flow-children: right;
+		width: 100%;
+		height: 40px;
+		margin-top: 6px;
+		padding: 0 4px;
+		vertical-align: middle;
+	}
+
+	&__filters {
+		flow-children: right;
+		vertical-align: center;
+	}
+
+	&__check {
+		flow-children: right;
+		vertical-align: center;
+		margin-right: 16px;
+		padding: 3px;
+
+		&:hover .cssmaps__check-label {
+			color: $white;
+		}
+	}
+
+	&__check-box {
+		width: 16px;
+		height: 16px;
+		vertical-align: center;
+		margin-right: 7px;
+		background-color: rgba(20, 20, 16, 0.55);
+		border-top: 1px solid $css-line-dark;
+		border-left: 1px solid $css-line-dark;
+		border-right: 1px solid $css-line-light;
+		border-bottom: 1px solid $css-line-light;
+
+		.cssmaps__check--on & {
+			background-color: $css-orange;
+		}
+	}
+
+	&__check-tick {
+		width: 100%;
+		height: 100%;
+		font-family: $font;
+		font-size: 13px;
+		font-weight: bold;
+		color: $css-orange-text;
+		text-align: center;
+		vertical-align: center;
+		opacity: 0;
+
+		.cssmaps__check--on & {
+			opacity: 1;
+		}
+	}
+
+	&__check-label {
+		font-family: $font;
+		font-size: 14px;
+		color: $css-text-dim;
+		vertical-align: center;
+		transition: color 0.1s ease-in-out 0s;
+
+		.cssmaps__check--on & {
+			color: $css-text;
+		}
+	}
+
+	&__count {
+		font-family: $font;
+		font-size: 13px;
+		color: $css-text-dim;
+		vertical-align: center;
+		margin-left: 8px;
+	}
+
+	&__btn {
+		flow-children: right;
+		height: 28px;
+		padding: 0 20px;
+		margin-left: 8px;
+		horizontal-align: right;
+		vertical-align: center;
+		background-color: $css-tab; // match the non-selected gamemode tabs
+		border-top: 1px solid $css-line-light;
+		border-left: 1px solid $css-line-light;
+		border-right: 1px solid $css-line-dark;
+		border-bottom: 1px solid $css-line-dark;
+		transition: background-color 0.1s ease-in-out 0s;
+
+		&:hover {
+			sound: 'UIPanorama.ButtonRollover';
+		}
+
+		&:disabled {
+			background-color: $css-panel;
+		}
+
+		&--connect:not(:disabled) .cssmaps__btn-text {
+			font-weight: bold;
+		}
+	}
+
+	&__btn-text {
+		font-family: $font;
+		font-size: 14px;
+		color: $css-text;
+		text-shadow: $css-engrave;
+		vertical-align: center;
+
+		.cssmaps__btn:disabled & {
+			color: #8f8f84;
+		}
+	}
+}

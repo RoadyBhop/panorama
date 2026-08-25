@@ -1,0 +1,47 @@
+<root>
+	<styles>
+		<include src="file://{resources}/styles/main.scss" />
+	</styles>
+
+	<scripts>
+		<include type="module" src="file://{scripts}/pages/map-selector/css-map-selector.ts" />
+	</scripts>
+
+	<Panel class="mainmenu__page cssmaps-page" onload="CssMapSelectorHandler.onLoad()">
+		<Panel class="cssmaps">
+			<!-- Title bar -->
+			<Panel class="cssmaps__titlebar">
+				<Label class="cssmaps__title" text="Maps" />
+				<Button class="cssmaps__close" onactivate="CssMapSelectorHandler.close()">
+					<Image class="cssmaps__close-icon" src="file://{images}/close.svg" textureheight="24" />
+				</Button>
+			</Panel>
+
+			<!-- Gamemode tabs (filled from TS) -->
+			<Panel id="CssMapsTabs" class="cssmaps__tabs" />
+
+			<!-- Column header (filled from TS so the columns stay clickable-sortable) -->
+			<Panel id="CssMapsHead" class="cssmaps__head" />
+
+			<!-- Map list -->
+			<Panel class="cssmaps__listwrap">
+				<Panel id="CssMapsList" class="cssmaps__list" />
+			</Panel>
+
+			<Label id="CssMapsStatus" class="cssmaps__status" text="Scanning map cache&#8230;" />
+
+			<!-- Bottom bar: ranked/unranked/beta filters + connect -->
+			<Panel class="cssmaps__bottom">
+				<Panel id="CssMapsFilters" class="cssmaps__filters" />
+				<Label id="CssMapsCount" class="cssmaps__count" text="" />
+				<Panel class="w-fill" />
+				<Button class="cssmaps__btn" onactivate="CssMapSelectorHandler.refresh()">
+					<Label class="cssmaps__btn-text" text="Refresh" />
+				</Button>
+				<Button id="CssMapsConnect" class="cssmaps__btn cssmaps__btn--connect" onactivate="CssMapSelectorHandler.connect()">
+					<Label class="cssmaps__btn-text" text="Connect" />
+				</Button>
+			</Panel>
+		</Panel>
+	</Panel>
+</root>

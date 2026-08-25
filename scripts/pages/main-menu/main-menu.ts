@@ -9,6 +9,13 @@ export enum Page {
 	CONTROLS_LIBRARY = 'ControlsLibrary'
 }
 
+// Values stored in persistent `settings.mainMenuBackground`.
+enum BackgroundMode {
+	LIGHT = 0,
+	DARK = 1,
+	CSS = 2 // custom static background01 (no video variant)
+}
+
 @PanelHandler()
 class MainMenuHandler implements OnPanelLoad {
 	readonly panels = {
@@ -36,6 +43,8 @@ class MainMenuHandler implements OnPanelLoad {
 		$.RegisterForUnhandledEvent('HidePauseMenu', () => this.onHidePauseMenu());
 		$.RegisterForUnhandledEvent('MapSelector_OnLoaded', () => this.onMapSelectorLoaded());
 		$.RegisterForUnhandledEvent('ReloadMainMenuBackground', () => this.setMainMenuBackground());
+		// Lets custom pages in their own script context (e.g. the CS:S map selector) close back to the menu.
+		$.RegisterForUnhandledEvent('MainMenu_ClosePage', () => this.hideMainMenuPageContent());
 		$.RegisterForUnhandledEvent('OnMomentumQuitPrompt', () => this.onQuitPrompt());
 		$.RegisterForUnhandledEvent('MomAPI_Authenticated', (result) => this.onAuthenticated(result));
 		$.RegisterEventHandler('Cancelled', $.GetContextPanel(), () => this.onEscapeKeyPressed());
@@ -280,18 +289,38 @@ class MainMenuHandler implements OnPanelLoad {
 			$.persistentStorage.setItem('settings.mainMenuMovie', true);
 		}
 
-		this.panels.movie.visible = useVideo;
-		this.panels.movie.SetReadyForDisplay(useVideo);
-
-		this.panels.image.visible = !useVideo;
-		this.panels.image.SetReadyForDisplay(!useVideo);
-
 		let backgroundVar = Number.parseInt($.persistentStorage.getItem('settings.mainMenuBackground'));
 
 		if (Number.isNaN(backgroundVar)) {
 			// Set color mode by system preference
 			backgroundVar = $.SystemInDarkMode() ? 1 : 0;
 			$.persistentStorage.setItem('settings.mainMenuBackground', backgroundVar);
+		}
+
+		// Custom static-image backgrounds (no video variant) — add more entries here as needed.
+		// These are .dds like the built-in backgrounds (.png also works).
+		const customBackgrounds: Record<number, string> = {
+			[BackgroundMode.CSS]: 'background01.dds'
+		};
+		const customImage = customBackgrounds[backgroundVar];
+
+		// The CSS/custom background gets a CS:S-style menu: the class drives all the show/hide via CSS
+		// (hides the top nav, spinning logo, news, and the other bottombar buttons; shows #CssMenu), scoped
+		// so the pause-menu nav is left alone. The lobby drawer is untouched.
+		if (this.panels.cp?.IsValid()) this.panels.cp.SetHasClass('mainmenu--css', !!customImage);
+
+		// A custom static background has no movie, so force the static image path for it.
+		const showVideo = useVideo && !customImage;
+
+		this.panels.movie.visible = showVideo;
+		this.panels.movie.SetReadyForDisplay(showVideo);
+
+		this.panels.image.visible = !showVideo;
+		this.panels.image.SetReadyForDisplay(!showVideo);
+
+		if (customImage) {
+			this.panels.image.SetImage(`file://{images}/backgrounds/${customImage}`);
+			return;
 		}
 
 		let name: string;
@@ -303,7 +332,7 @@ class MainMenuHandler implements OnPanelLoad {
 		} else {
 			// Using a switch as we're likely to add more of these in the future
 			switch (backgroundVar) {
-				case 1:
+				case BackgroundMode.DARK:
 					name = 'MomentumDark';
 					break;
 				default:
@@ -312,12 +341,26 @@ class MainMenuHandler implements OnPanelLoad {
 			}
 		}
 
-		if (useVideo) {
+		if (showVideo) {
 			this.panels.movie.SetMovie(`file://{resources}/videos/backgrounds/${name}.webm`);
 			this.panels.movie.Play();
 		} else {
 			this.panels.image.SetImage(`file://{images}/backgrounds/${name}.dds`);
 		}
+	}
+
+	/**
+	 * Toggles the custom CSS (background01) static background on/off. Off reverts to the light/dark
+	 * background matching the system preference.
+	 */
+	toggleCssBackground() {
+		const isCss = Number.parseInt($.persistentStorage.getItem('settings.mainMenuBackground')) === BackgroundMode.CSS;
+		$.persistentStorage.setItem(
+			'settings.mainMenuBackground',
+			isCss ? ($.SystemInDarkMode() ? BackgroundMode.DARK : BackgroundMode.LIGHT) : BackgroundMode.CSS
+		);
+		this.setMainMenuBackground();
+		$.PlaySoundEvent(isCss ? 'MenuThemeLight' : 'MenuThemeDark');
 	}
 
 	/*

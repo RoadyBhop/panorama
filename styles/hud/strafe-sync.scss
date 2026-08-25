@@ -1,43 +1,34 @@
 @use '../config' as *;
 
-.strafesync {
-	align: center center;
+// Strafe Offsets (sync trainer). Fills the customizer-sized component; the offset history is drawn on
+// the canvas, with an optional latest-offset readout below it.
+.strafeoffset {
+	width: 100%;
+	// Explicit height (not 100%): the C++ MomHudStrafeSync panel sizes to its content, so a 100% child
+	// would collapse to 0 and the canvas would never render.
+	height: 90px;
 	flow-children: down;
 
-	&__bar-wrapper {
-		width: fit-children;
+	// Background is applied here by the customizer's colour picker (defaults transparent), so it only
+	// covers the graph, not the text readout.
+	&__area {
+		width: 100%;
+		height: fill-parent-flow(1);
+		border-radius: 6px;
 	}
 
-	&__increase-color {
-		&--fg {
-			color: $strafesync-color-increase;
-		}
-		&--bg {
-			.ProgressBarLeft {
-				background-color: $strafesync-color-increase;
-			}
-		}
+	&__canvas {
+		width: 100%;
+		height: 100%;
 	}
 
-	&__decrease-color {
-		&--fg {
-			color: $strafesync-color-decrease;
-		}
-		&--bg {
-			.ProgressBarLeft {
-				background-color: $strafesync-color-decrease;
-			}
-		}
-	}
-
-	&__default-color {
-		&--fg {
-			color: $strafesync-color-default;
-		}
-		&--bg {
-			.ProgressBarLeft {
-				background-color: $strafesync-color-default;
-			}
-		}
+	&__text {
+		width: 100%;
+		horizontal-align: center;
+		text-align: center;
+		font-size: 16px;
+		font-weight: bold;
+		color: #ffffff;
+		margin-top: 2px;
 	}
 }

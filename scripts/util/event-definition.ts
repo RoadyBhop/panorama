@@ -32,6 +32,11 @@ declare interface GlobalEventNameMap {
 	/** Fired when a main menu tab is closed */
 	MainMenuPageHidden: (page: import('pages/main-menu/main-menu').Page) => void;
 
+	/** Close the currently-open main menu page, returning to the home/menu view. Used by custom
+	 *  pages (e.g. the CS:S map selector) that have their own script context and so can't call
+	 *  MainMenuHandler directly. */
+	MainMenu_ClosePage: () => void;
+
 	/** Navigates to a setting by panel handle */
 	SettingsNavigateToPanel: (tabID: keyof typeof import('common/settings').SettingsTabs, panel: GenericPanel) => void;
 
@@ -79,6 +84,7 @@ declare interface GlobalEventNameMap {
 $.DefineEvent('ReloadMainMenuBackground', 0);
 $.DefineEvent('MainMenuPageShown', 1);
 $.DefineEvent('MainMenuPageHidden', 1);
+$.DefineEvent('MainMenu_ClosePage', 0);
 $.DefineEvent('SettingsNavigateToPanel', 2);
 $.DefineEvent('SettingsSave', 0);
 $.DefineEvent('ExtendDrawer', 0);

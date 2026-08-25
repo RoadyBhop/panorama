@@ -803,3 +803,81 @@ $drawer-width: 768px;
 		opacity: 0;
 	}
 }
+
+// CS:S-style menu, shown only when the CSS background is active (see .mainmenu--css toggling below).
+.cssmenu {
+	flow-children: down;
+	horizontal-align: left;
+	vertical-align: center;
+	margin-left: 90px;
+	z-index: 5;
+	visibility: collapse;
+
+	&__title {
+		font-family: $font-header;
+		font-size: 88px;
+		letter-spacing: 3px;
+		color: $white;
+		text-transform: uppercase;
+		text-shadow: 2px 2px 6px rgba(0, 0, 0, 0.85);
+		margin-bottom: 24px;
+	}
+
+	&__list {
+		flow-children: down;
+	}
+
+	&__item {
+		padding: 3px 0;
+
+		&:hover .cssmenu__item-text {
+			color: $white;
+		}
+	}
+
+	&__item-text {
+		font-family: $font-header;
+		font-size: 38px;
+		letter-spacing: 2px;
+		color: rgba(255, 255, 255, 0.7);
+		text-transform: uppercase;
+		text-shadow: 1px 1px 4px rgba(0, 0, 0, 0.85);
+		transition-property: color;
+		transition-duration: 0.1s;
+	}
+}
+
+// When the CSS background is active, take over the home view with the CS:S menu.
+.mainmenu--css {
+	// Hide the spinning logo + news panel.
+	.home__wrapper {
+		visibility: collapse;
+	}
+
+	// Hide every bottombar button except the CSS toggle (so you can switch back).
+	.home__bottombar > .bottombar__tooltip:not(.bottombar__tooltip--css) {
+		visibility: collapse;
+	}
+
+	.cssmenu {
+		visibility: visible;
+	}
+}
+
+// Hide the top nav + right-side drawer in the main menu only — leave the pause menu's nav/lobby intact.
+.mainmenu--css:not(.MainMenuRootPanel--PauseMenuMode) {
+	.topnav,
+	.topnav__shadow {
+		visibility: collapse;
+	}
+
+	// Hide the whole right drawer (rightnav strip + its shadow + drawer content).
+	.drawer {
+		visibility: collapse;
+	}
+
+	// Reclaim the 50px the rightnav strip reserved on the right.
+	.mainmenu__content {
+		margin-right: 0;
+	}
+}

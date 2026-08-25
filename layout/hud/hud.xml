@@ -34,7 +34,8 @@
 		
         <!-- Gamemode Specific HUD elements -->
         <MomHudAmmo id="Ammo"/>
-        <MomHudStrafeTrainer id="StrafeTrainer"/> 
+        <MomHudStrafeTrainer id="StrafeTrainer"/>
+        <MomHudStrafeSync id="StrafeSync"/> <!-- repurposed as the Strafe Offsets / sync trainer -->
         <MomHudJumpStats id="JumpStats"/>
         <MomHudStickyCharge id="StickyCharge" />
 		<MomHudStickyCount id="StickyCount" />
@@ -53,7 +54,7 @@
 
         <!-- Old, broken hud elements, might get revived some day, not important -->
 		<!-- <HudBoneCounts id="BoneCount" /> TODO: HudTopCenter, not in customizer, probably gonna get nuked -->
-        <!-- <MomHudStrafeSync id="StrafeSync" /> This is broken and probably not worth fixing --> 
+        <!-- MomHudStrafeSync is now used above as the Strafe Offsets / sync trainer -->
 
 
         <!-- Hud panels using blur must be placed below blur definitions -->
