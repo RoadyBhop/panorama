@@ -14,7 +14,7 @@ import type { MemberData } from 'common/online';
 
 // The three bottom-bar filter categories (multi-select checkboxes).
 type Category = 'ranked' | 'unranked' | 'beta';
-type SortKey = 'name' | 'downloaded' | 'completed' | 'players' | 'tier' | 'author' | 'date';
+type SortKey = 'name' | 'downloaded' | 'completed' | 'players' | 'tier' | 'author' | 'date' | 'dateAdded';
 
 // One list row: a map resolved for the currently-selected gamemode.
 interface Row {
@@ -24,7 +24,8 @@ interface Row {
 	completed: boolean;
 	tier: number;
 	author: string;
-	date: string;
+	date: string; // authored creation date (info.creationDate)
+	dateAdded: string; // added to Momentum (createdAt / submission date)
 	category: Category;
 }
 
@@ -45,8 +46,8 @@ let available: Gamemode[] = [];
 let selectedMode: Gamemode | null = null;
 let selectedMapId: number | null = null;
 const filters: Record<Category, boolean> = { ranked: true, unranked: false, beta: false };
-let sortKey: SortKey = 'name';
-let sortAsc = true;
+let sortKey: SortKey = 'dateAdded'; // default view: newest maps first
+let sortAsc = false;
 
 // Best-effort "players in the map lobby" — the C++ lobby API only surfaces member data for the
 // lobby WE are in, so this counts members of the current lobby by the map they're on. 0 otherwise.
@@ -60,7 +61,8 @@ const COLS: { key: SortKey; label: string; width: string; align: 'left' | 'right
 	{ key: 'players', label: 'Players', width: 'width: 78px;', align: 'right' },
 	{ key: 'tier', label: 'Tier', width: 'width: 64px;', align: 'right' },
 	{ key: 'author', label: 'Authors', width: 'width: 300px;', align: 'left' },
-	{ key: 'date', label: 'Date Created', width: 'width: 128px;', align: 'left' }
+	{ key: 'date', label: 'Date Created', width: 'width: 128px;', align: 'left' },
+	{ key: 'dateAdded', label: 'Date Added', width: 'width: 128px;', align: 'left' }
 ];
 
 @PanelHandler()
@@ -252,8 +254,11 @@ class CssMapSelectorHandler {
 			completed,
 			tier: tier ?? board?.tier ?? 0,
 			author: getAuthorNames(sd) || '—',
-			// info.creationDate = the map's authored creation date; createdAt is the DB/submission date.
+			// info.creationDate = the map's authored creation date.
 			date: this.fmtDate(sd.info?.creationDate),
+			// "Date Added" = when the map went live: released date (info.approvedDate) for approved
+			// (ranked/unranked) maps, else when it entered beta (createdAt).
+			dateAdded: this.fmtDate(isApproved ? (sd.info?.approvedDate ?? sd.createdAt) : sd.createdAt),
 			category
 		};
 	}
@@ -283,6 +288,8 @@ class CssMapSelectorHandler {
 					return dir * (a.author.localeCompare(b.author) || a.name.localeCompare(b.name));
 				case 'date':
 					return dir * (a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
+				case 'dateAdded':
+					return dir * (a.dateAdded.localeCompare(b.dateAdded) || a.name.localeCompare(b.name));
 				default:
 					return dir * a.name.localeCompare(b.name);
 			}
@@ -441,6 +448,7 @@ class CssMapSelectorHandler {
 		cellText(rowPanel, row.tier ? `${row.tier}` : '—', COLS[4]);
 		cellText(rowPanel, row.author, COLS[5]);
 		cellText(rowPanel, row.date, COLS[6]);
+		cellText(rowPanel, row.dateAdded, COLS[7]);
 
 		this.rowPlayerLabels.push({ name: row.name, label: playersLbl });
 		this.rowDownloadedLabels.push({ id, label: dlLabel });
@@ -495,11 +503,12 @@ class CssMapSelectorHandler {
 		const name = map.staticData.name;
 		this.connectingMapId = map.staticData.id;
 		this.dlSize = 0;
-		// Downloaded maps launch straight away (the menu closes on LevelInit); un-downloaded maps start
-		// a background download — show that so Connect visibly does something either way.
-		this.setStatus(
-			map.mapFileExists ? `Launching ${name}…` : `${name}: starting download… (Connect again once done)`
-		);
+		// Downloaded maps launch immediately (loads are fast) — no status message; a "Launching…" line
+		// would only linger, still showing the next time the menu is reopened. Only downloads, which take
+		// time and have no other feedback in this list, get a status line.
+		if (!map.mapFileExists) {
+			this.setStatus(`${name}: starting download… (Connect again once done)`);
+		}
 		$.Msg(`[CssMaps] connect: ${name} (id ${map.staticData.id}) fileExists=${map.mapFileExists} gm=${selectedMode}`);
 		// selectedMode drives which gamemode the map launches in (null = no override).
 		handlePlayMap(map, selectedMode);

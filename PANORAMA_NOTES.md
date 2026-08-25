@@ -286,12 +286,13 @@ Layout is minimal chrome; tabs / header / rows / filters are all built in TS.
   (`mapFileExists` → green ✓; flips in place when a Connect download finishes, via `MapDownload_End`),
   Completed (local `userData.tracks` via `getUserMapDataTrack` → gold ✓; same completion model as Stats —
   climb Pro/Teleport map to run‑style 0; reflects scan‑time state, updated on Refresh), Players, Tier,
-  Authors, Date Created (`info.creationDate` → `YYYY‑MM‑DD` — the authored date, NOT `createdAt` which is
-  the DB/submission date); click a header to sort (▲/▼), shared width config in the `COLS` array. **Bottom bar** = Ranked/Unranked/Beta checkboxes (multi‑select;
+  Authors, Date Created (`info.creationDate` → `YYYY‑MM‑DD` — the authored date), Date Added (= when the map
+  went live: `info.approvedDate` [released] for approved maps, else `createdAt` [entered beta] for beta;
+  the default sort is newest Date Added first); click a header to sort (▲/▼), shared width config in the `COLS` array. **Bottom bar** = Ranked/Unranked/Beta checkboxes (multi‑select;
   default **Ranked only**) + a map count + Refresh + **Connect** (`handlePlayMap(map, selectedMode)` —
-  launches a downloaded map, else queues a download; the custom list has no per‑row download UI so Connect
-  writes download progress / launch state into the status line via the `MapDownload_*` +
-  `MapSelector_TryPlayMap_Outcome` events). Double‑click a row = Connect; Esc/X closes.
+  launches a downloaded map straight away (no status line — loads are fast and a lingering message would
+  still show on reopen), else queues a download and writes its progress into the status line via the
+  `MapDownload_*` events). Double‑click a row = Connect; Esc/X closes.
 - **Players column caveat:** per‑map lobby counts are **not** JS‑queryable (see §7); it approximates by
   counting current‑lobby members' `map_name` from the `PanoramaComponent_SteamLobby_*` events — 0 for
   maps nobody in your lobby is on. Cells update in place via kept `rowPlayerLabels` refs.
