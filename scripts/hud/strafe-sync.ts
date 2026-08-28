@@ -2,6 +2,7 @@ import { PanelHandler } from 'util/module-helpers';
 import { Button } from 'common/buttons';
 import { GamemodeCategory, GamemodeCategoryToGamemode } from 'common/web/enums/gamemode.enum';
 import { CustomizerPropertyType, registerHUDCustomizerComponent } from 'common/hud-customizer';
+import { rgbaStringToTuple } from 'util/colors';
 
 /**
  * Strafe Offsets (a.k.a. sync trainer). Shows a history of your key↔mouse timing at each strafe
@@ -23,6 +24,11 @@ const DEFAULT_LATE_COLOR = 'rgba(220, 116, 13, 1)' as color; // pressed key too 
 const DEFAULT_EARLY_COLOR = 'rgba(24, 150, 211, 1)' as color; // pressed key too early
 const DEFAULT_PERFECT_COLOR = 'rgba(21, 152, 86, 1)' as color; // on time
 const DEFAULT_LINE_COLOR = 'rgba(255, 255, 255, 0.5)' as color; // centre + top/bottom lines
+
+// Faint grid line at each 1-tick interval (drawn behind the bars so magnitudes read at a glance).
+const GRID_MIN_TICK_PX = 3; // skip the grid when 1-tick rows fall closer than this (too dense to read)
+const GRID_THICKNESS = 1; // thin, faint lines (the solid centre/bounds are 2px in the full line colour)
+const GRID_ALPHA_FACTOR = 0.5; // grid lines are this fraction of the line colour's alpha (fainter)
 
 interface OffsetSample {
 	offset: number; // ticks; >0 late, <0 early
@@ -63,10 +69,20 @@ class StrafeOffset {
 	pendingTurn: SwitchEvent | null = null; // a mouse switch waiting for its keyswitch
 
 	constructor() {
+		// The C++ MomHudStrafeSync panel we repurpose gates its own visibility on the legacy convar
+		// `mom_hud_strafesync_draw`, which ships as 0 — THAT is what made the base an "old disabled hud":
+		// C++ forces the panel invisible regardless of our layout, so no bars/lines/text ever paint even
+		// though the self-scheduled update loop runs and logs. Force it on so the panel is allowed to
+		// render; the customizer's `enabled` toggle then governs actual show/hide. Re-applied on every
+		// (re)load, since `panorama_reload` re-runs this constructor but does NOT re-read cfg/config.cfg.
+		try {
+			GameInterfaceAPI.ConsoleCommand('mom_hud_strafesync_draw 1');
+		} catch {}
+
 		registerHUDCustomizerComponent($.GetContextPanel(), {
 			name: $.Localize('#Customizer_Strafe_Offset_Name'),
 			resizeX: true,
-			resizeY: false, // fixed CSS height (like strafe-trainer); width is resizable
+			resizeY: true, // both axes resizable; the graph fills the customizer-set panel height
 			gamemode: [
 				...GamemodeCategoryToGamemode.get(GamemodeCategory.BHOP),
 				...GamemodeCategoryToGamemode.get(GamemodeCategory.SURF),
@@ -144,7 +160,7 @@ class StrafeOffset {
 						`history=${this.historyLength}`
 				);
 				if (this.panels.text) this.panels.text.visible = this.showText;
-				this.panels.canvas?.SetMaxDrawCommands(256); // bars + lines; plenty for any history length
+				this.panels.canvas?.SetMaxDrawCommands(512); // bars + solid lines + one faint line per tick interval
 				// MomHudStrafeSync doesn't dispatch HudProcessInput to us, so drive updates ourselves.
 				this.loop();
 			}
@@ -257,6 +273,18 @@ class StrafeOffset {
 		return offset > 0 ? this.lateColor : this.earlyColor;
 	}
 
+	/** Return `c` with its alpha scaled by `factor` (used for the fainter dotted grid lines). */
+	dim(c: color, factor: number): color {
+		try {
+			const [r, g, b, a] = rgbaStringToTuple(c); // a is 0..255
+			const alpha = Math.max(0, Math.min(1, (a / 255) * factor));
+			// Keep the alpha short — a long float (0.2007843…) can trip the colour parser and draw nothing.
+			return `rgba(${r}, ${g}, ${b}, ${alpha.toFixed(3)})` as color;
+		} catch {
+			return c;
+		}
+	}
+
 	/** Draw the offset history: one bar per keyswitch, up = late / down = early from a centre line. */
 	draw() {
 		const canvas = this.panels.canvas;
@@ -279,7 +307,22 @@ class StrafeOffset {
 		const midY = H / 2;
 		const half = H / 2;
 
-		// Bars first, newest at the right edge.
+		// Faint grid line at each 1-tick interval, behind the bars — one thin FULL-WIDTH line per whole
+		// tick of offset, so you can read a bar's magnitude at a glance. (A dotted line meant dozens of
+		// tiny DrawLinePoints per row and tanked the frame rate; one solid line each is ~free.) Rows are
+		// `half / maxOffset` px apart; skipped when that's too tight to be legible. Interior ticks only:
+		// ±maxOffset are the solid bound lines and 0 is the solid centre line, both drawn below.
+		const tickPx = half / this.maxOffset;
+		if (tickPx >= GRID_MIN_TICK_PX) {
+			const gridColor = this.dim(this.lineColor, GRID_ALPHA_FACTOR);
+			for (let k = 1; k < this.maxOffset; k++) {
+				const dy = k * tickPx;
+				canvas.DrawLinePoints(2, [0, midY - dy, W, midY - dy], GRID_THICKNESS, gridColor); // late (above)
+				canvas.DrawLinePoints(2, [0, midY + dy, W, midY + dy], GRID_THICKNESS, gridColor); // early (below)
+			}
+		}
+
+		// Bars next, newest at the right edge.
 		const len = this.history.length;
 		for (let i = 0; i < len; i++) {
 			const s = this.history[i];
@@ -292,11 +335,16 @@ class StrafeOffset {
 			const yTip = midY - fr * half; // +offset (late) ⇒ up
 			const col = this.colorFor(s.offset);
 
-			// quad from the centre line to the tip
-			canvas.DrawPoly(4, [x0, midY, x0, yTip, x1, yTip, x1, midY], col);
+			// Quad between the centre line and the tip. DrawPoly is winding-sensitive (it culls the
+			// reverse order), so trace EVERY bar with the same top→bottom winding — otherwise downward
+			// (early) bars, whose tip is below the centre, wind the opposite way and never paint. Normalise
+			// to [yTop, yBot] so up (late) and down (early) bars both render.
+			const yTop = Math.min(midY, yTip);
+			const yBot = Math.max(midY, yTip);
+			canvas.DrawPoly(4, [x0, yBot, x0, yTop, x1, yTop, x1, yBot], col);
 		}
 
-		// Top / bottom bound lines + centre "perfect" line, drawn on top of the bars.
+		// Top / bottom bound lines + centre "perfect" line, drawn on top of the bars and grid.
 		const hline = (y: number) => canvas.DrawLinePoints(2, [0, y, W, y], 2, this.lineColor);
 		hline(1); // top
 		hline(H - 1); // bottom

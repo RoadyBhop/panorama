@@ -200,6 +200,9 @@
 									<Button class="cssmenu__item" onactivate="MainMenuHandler.navigateToPage('Stats', 'stats/stats')">
 										<Label class="cssmenu__item-text" text="STATS" />
 									</Button>
+									<Button class="cssmenu__item" onactivate="MainMenuHandler.openBackgroundSelector()">
+										<Label class="cssmenu__item-text" text="BACKGROUND" />
+									</Button>
 									<Button class="cssmenu__item" onactivate="MainMenuHandler.onQuitButtonPressed()">
 										<Label class="cssmenu__item-text" text="QUIT" />
 									</Button>
@@ -244,6 +247,11 @@
 										<Image class="bottombar__icon" src="file://{images}/game-logos/css.png" textureheight="64" />
 									</Button>
 								</TooltipPanel>
+								<TooltipPanel class="bottombar__tooltip h-align-right" tooltip="Choose background">
+									<Button class="bottombar__button" onactivate="MainMenuHandler.openBackgroundSelector()">
+										<Image class="bottombar__icon" src="file://{images}/movie-open-outline.svg" textureheight="64" />
+									</Button>
+								</TooltipPanel>
 							</Panel>
 						</Panel>
 						<Panel id="PageContent" class="mainmenu__page-container mainmenu__page-container--hidden">
@@ -256,6 +264,36 @@
 		</Panel>
 		
 		<Panel id="LegalConsent" class="legal hidden" visible="false" />
+
+		<!-- Background selector overlay: pick a background by file name (Panorama can't list folders).
+		     Opened from the bottombar (normal menu) and the CS:S menu's BACKGROUND item. -->
+		<Panel id="BackgroundSelector" class="bgselector">
+			<Button class="bgselector__backdrop" onactivate="MainMenuHandler.closeBackgroundSelector()" />
+			<Panel class="bgselector__window">
+				<Label class="bgselector__title" text="Choose Background" />
+				<Label class="bgselector__hint" text="Type a file name (with extension) from videos/backgrounds or images/backgrounds — e.g. MomentumDark.webm or background01.dds." />
+				<Panel class="bgselector__inputrow">
+					<TextEntry id="BackgroundNameInput" class="textentry bgselector__input" maxchars="120" placeholder="MomentumDark.webm  /  background01.dds" ontextentrysubmit="MainMenuHandler.applyBackgroundByName()" />
+					<Button class="bgselector__apply" onactivate="MainMenuHandler.applyBackgroundByName()">
+						<Label class="bgselector__apply-text" text="Apply" />
+					</Button>
+				</Panel>
+				<Label id="BackgroundSelectorStatus" class="bgselector__status bgselector__status--hidden" text="" />
+				<!-- Preview doubles as the validation probe: an image name is loaded here; PanelLoaded means
+				     it exists (apply it), ImageFailedLoad means "not found". Kept visible so it reliably loads. -->
+				<Image id="BackgroundProbe" class="bgselector__probe" scaling="stretch-to-cover-preserve-aspect" />
+				<Label class="bgselector__presets-label" text="Included backgrounds" />
+				<Panel id="BackgroundSelectorPresets" class="bgselector__presets" />
+				<Panel class="bgselector__actions">
+					<Button class="bgselector__button" onactivate="MainMenuHandler.resetBackgroundOverride()">
+						<Label class="bgselector__button-text" text="Reset to theme default" />
+					</Button>
+					<Button class="bgselector__button" onactivate="MainMenuHandler.closeBackgroundSelector()">
+						<Label class="bgselector__button-text" text="Close" />
+					</Button>
+				</Panel>
+			</Panel>
+		</Panel>
 
 		<!-- Make sure these are at the bottom to get the z-order right -->
 		<ToastManager />

@@ -881,3 +881,164 @@ $drawer-width: 768px;
 		margin-right: 0;
 	}
 }
+
+// Background selector overlay — pick a main-menu background by file name (see main-menu.ts,
+// setMainMenuBackground + the background-selector methods). Works in both the normal and CS:S menus.
+.bgselector {
+	width: 100%;
+	height: 100%;
+	z-index: 200;
+	// Hidden until opened. Class-driven (reliable) — `visible="false"` alone did NOT keep it closed on
+	// load. openBackgroundSelector() adds `--open`, closeBackgroundSelector() removes it.
+	visibility: collapse;
+
+	&--open {
+		visibility: visible;
+	}
+
+	&__backdrop {
+		width: 100%;
+		height: 100%;
+		background-color: rgba(0, 0, 0, 0.6);
+	}
+
+	&__window {
+		width: 580px;
+		padding: 28px 30px;
+		horizontal-align: center;
+		vertical-align: center;
+		flow-children: down;
+		background-color: rgba(20, 24, 28, 0.98);
+		border: 1px solid rgba(255, 255, 255, 0.12);
+		border-radius: 10px;
+		box-shadow: $popup-shadow;
+	}
+
+	&__title {
+		font-family: $font-header;
+		font-size: 34px;
+		letter-spacing: 1px;
+		color: $white;
+		text-transform: uppercase;
+		margin-bottom: 8px;
+	}
+
+	&__hint {
+		width: 100%;
+		font-size: 14px;
+		color: rgba(255, 255, 255, 0.55);
+		margin-bottom: 16px;
+	}
+
+	&__inputrow {
+		width: 100%;
+		flow-children: right;
+		margin-bottom: 10px;
+	}
+
+	&__input {
+		width: fill-parent-flow(1);
+		vertical-align: center;
+		margin-right: 8px;
+	}
+
+	&__apply {
+		vertical-align: center;
+		padding: 9px 22px;
+		background-color: #1c2b30;
+		border: 1px solid #2a3f45;
+		border-radius: 6px;
+
+		&:hover {
+			background-color: #24383f;
+		}
+	}
+
+	&__apply-text {
+		font-size: 15px;
+		color: #6fe0d0;
+	}
+
+	&__status {
+		width: 100%;
+		font-size: 14px;
+		color: rgba(120, 230, 150, 0.9);
+		margin-bottom: 12px;
+
+		&--error {
+			color: rgba(240, 120, 110, 0.95);
+		}
+
+		&--hidden {
+			visibility: collapse;
+		}
+	}
+
+	&__probe {
+		width: 100%;
+		height: 150px;
+		border-radius: 6px;
+		border: 1px solid rgba(255, 255, 255, 0.12);
+		background-color: rgba(0, 0, 0, 0.4);
+		margin-bottom: 16px;
+	}
+
+	&__presets-label {
+		font-size: 13px;
+		letter-spacing: 1px;
+		text-transform: uppercase;
+		color: rgba(255, 255, 255, 0.45);
+		margin-bottom: 8px;
+	}
+
+	&__presets {
+		width: 100%;
+		flow-children: right-wrap;
+		margin-bottom: 18px;
+	}
+
+	&__preset {
+		padding: 6px 12px;
+		margin: 0 8px 8px 0;
+		background-color: rgba(255, 255, 255, 0.05);
+		border: 1px solid rgba(255, 255, 255, 0.12);
+		border-radius: 5px;
+
+		&:hover {
+			background-color: rgba(255, 255, 255, 0.1);
+		}
+
+		&--active {
+			background-color: rgba(111, 224, 208, 0.15);
+			border: 1px solid rgba(111, 224, 208, 0.6);
+		}
+	}
+
+	&__preset-text {
+		font-size: 13px;
+		color: rgba(255, 255, 255, 0.8);
+	}
+
+	&__actions {
+		width: 100%;
+		flow-children: right;
+		horizontal-align: right;
+	}
+
+	&__button {
+		padding: 9px 20px;
+		margin-left: 10px;
+		background-color: rgba(255, 255, 255, 0.06);
+		border: 1px solid rgba(255, 255, 255, 0.14);
+		border-radius: 6px;
+
+		&:hover {
+			background-color: rgba(255, 255, 255, 0.12);
+		}
+	}
+
+	&__button-text {
+		font-size: 14px;
+		color: rgba(255, 255, 255, 0.85);
+	}
+}

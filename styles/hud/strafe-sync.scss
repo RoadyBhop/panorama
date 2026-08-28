@@ -4,9 +4,12 @@
 // the canvas, with an optional latest-offset readout below it.
 .strafeoffset {
 	width: 100%;
-	// Explicit height (not 100%): the C++ MomHudStrafeSync panel sizes to its content, so a 100% child
-	// would collapse to 0 and the canvas would never render.
-	height: 90px;
+	// Fill the panel that the customizer sizes (its width/height come from hud_default.kv3 and the resize
+	// knobs — resizeX/resizeY both true). The context MomHudStrafeSync panel gets a definite inline
+	// width AND height from the customizer, so 100% resolves against those and the graph grows/shrinks
+	// with the panel. (An earlier note claimed a 100% height collapsed to 0 — that was really the panel
+	// being hidden by `mom_hud_strafesync_draw 0`, see the .ts; it renders fine now.)
+	height: 100%;
 	flow-children: down;
 
 	// Background is applied here by the customizer's colour picker (defaults transparent), so it only

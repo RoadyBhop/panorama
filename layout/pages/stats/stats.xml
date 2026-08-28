@@ -7,6 +7,11 @@
 		<include type="module" src="file://{scripts}/pages/stats/stats.ts" />
 	</scripts>
 
+	<!-- A layout root allows only ONE top-level panel (and it must NOT have an id — that's set by the code
+	     that loads the layout), so this wrapper (default overlap flow) holds the page AND the top-10 popup,
+	     letting the popup overlay the page. -->
+	<Panel style="width: 100%; height: 100%;">
+
 	<!-- Extra right padding (4-value: top right bottom left) keeps content clear of the collapsed right-side drawer handle. -->
 	<Panel class="mainmenu__page" style="flow-children: down; padding: 20px 76px 40px 40px;" onload="StatsHandler.onLoad()">
 		<!-- Header: title + preload/rescan -->
@@ -47,4 +52,30 @@
 		<!-- clip (not scroll/noclip): bounds the cards' height:100% and prevents the whole page from scrolling; only the tier map box scrolls. -->
 		<Panel id="StatsContent" style="flow-children: right; width: 100%; height: fill-parent-flow(1); overflow: squish clip;" />
 	</Panel>
+
+	<!-- Top-10 leaderboard popup: opened by clicking a map name in the tier list; overlays the whole page.
+	     Sibling of the page inside the root wrapper (default overlap flow). Hidden via style.visibility,
+	     toggled from stats.ts (reliable, unlike a `visible` attribute). Rows are built in TS. -->
+	<Panel id="StatsLbPopup" style="width: 100%; height: 100%; visibility: collapse;">
+		<Button id="StatsLbBackdrop" onactivate="StatsHandler.closeMapLeaderboard()" style="width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.72);" />
+		<Panel style="width: 1080px; height: 92%; horizontal-align: center; vertical-align: center; flow-children: right; padding: 22px 24px; background-color: #12161d; border: 1px solid #2a3340; border-radius: 10px;">
+			<!-- Left column: the map's screenshots as a vertical strip. Filled from TS via SetImage on the
+			     map's CDN urls (already in the local scan cache); collapsed when the map has no images. -->
+			<Panel id="StatsLbImages" style="flow-children: down; width: 256px; height: 100%; margin-right: 20px; overflow: squish scroll;" />
+			<!-- Right column: the leaderboard title + top-10 / group-cutoff list. -->
+			<Panel style="flow-children: down; width: fill-parent-flow(1); height: 100%; overflow: squish clip;">
+				<Panel style="flow-children: right; width: 100%; margin-bottom: 2px;">
+					<Label id="StatsLbTitle" text="" style="width: fill-parent-flow(1); font-size: 22px; font-weight: bold; color: #ffffff; vertical-align: center; text-overflow: ellipsis;" />
+					<Button onactivate="StatsHandler.closeMapLeaderboard()" style="width: 30px; height: 30px; vertical-align: center; background-color: #232a33; border-radius: 6px;">
+						<Label text="✕" style="font-size: 15px; color: #cdd5df; horizontal-align: center; vertical-align: center;" />
+					</Button>
+				</Panel>
+				<Label id="StatsLbSubtitle" text="" style="font-size: 13px; color: #8a93a0; margin-bottom: 12px;" />
+				<Label id="StatsLbStatus" text="" style="font-size: 14px; color: #8a93a0; margin-bottom: 6px; visibility: collapse;" />
+				<Panel id="StatsLbList" style="flow-children: down; width: 100%; height: fill-parent-flow(1); overflow: squish scroll;" />
+			</Panel>
+		</Panel>
+	</Panel>
+
+	</Panel> <!-- /StatsRoot -->
 </root>

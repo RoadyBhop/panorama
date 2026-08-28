@@ -135,6 +135,57 @@ interface PerMapRank {
 	wrTime: number | null; // rank-1 time, seconds (from the same phase-2 call → WR diff, no extra request)
 }
 let perMapRank: Record<string, PerMapRank> = {};
+
+// Leaderboard popup (opened by clicking a map name). Fetched on click and cached for the session so
+// re-opening is instant. The completion count comes from the LOCAL map cache (no HTTP) and the rank scan
+// only pulled `take=1` (WR) + your own rank — neither has the full board — so these are on-demand: one
+// `take=10` call for the top 10, plus one `skip=cutoff&take=1` call per group cutoff (the last person in
+// each group G1..G6). Cutoff RANKS are computed from the board size with the same thresholds as `bestGroup`,
+// so only that one row per group is fetched. The board is player-independent, so it survives a viewed-user
+// change; cleared only on rescan.
+interface Top10Row {
+	rank: number;
+	time: number; // seconds
+	userID: number;
+	alias: string;
+	steamID: string | null; // steamID64 → AvatarImage (Steam client provides the avatar, no web call)
+}
+interface GroupCutoff {
+	group: number; // 1..6
+	rank: number; // the last (worst) rank still in this group, on this board
+	row: Top10Row | null; // that person's run (null until fetched, or if the fetch failed)
+	fetched: boolean;
+}
+interface MapLb {
+	rows: Top10Row[]; // top 10
+	total: number; // board size (totalCount)
+	cutoffs: GroupCutoff[]; // one per non-empty group, worst-rank ascending
+}
+let mapLbCache: Record<string, MapLb> = {};
+// The viewed user's own standing on a board (rank + PB time), for the "vs You" column and the "where you'd
+// place" row in the cutoffs. Keyed `perMapKey|uid` (player-dependent, unlike mapLbCache), so switching users
+// just uses a different key. Free from `perMapRank` when the rank scan has it; otherwise one `userIDs=` call.
+// {rank:null,time:null} = you're not on that board. Cleared on rescan.
+interface Standing {
+	rank: number | null;
+	time: number | null; // seconds
+}
+let yourStandingCache: Record<string, Standing> = {};
+// Live refs to the cutoff rows currently shown, so each cutoff fetch fills its row in place (no re-render).
+let lbCutoffRefs: { rank: number; panel: Panel }[] = [];
+
+// Shared column widths so the top-10 rows and the cutoff rows line up (badge · rank · avatar · player · time · +WR · vs You).
+const LB_W_BADGE = 56; // WR / T10 / G1..G6
+const LB_W_RANK = 48;
+const LB_W_AV = 40; // avatar (26) + its right margin (14)
+const LB_W_TIME = 104;
+const LB_W_DIFF = 88; // +WR diff
+const LB_W_YOU = 88; // signed diff vs the viewed user's own time
+// Base row layout — set at creation (flow/layout props aren't reliably settable via .style at runtime);
+// fillLbRow only toggles backgroundColor (which is) for the "your row" highlight.
+const LB_ROW_STYLE =
+	'flow-children: right; width: 100%; padding: 6px 10px; margin-bottom: 3px; border-radius: 6px; background-color: #171b22;';
+
 // Live refs to each shown tier-map row's rank-info cell, so a scan can fill it in place after the fact.
 let tierRankRows: { key: string; panel: Panel }[] = [];
 // Persistent tier rows + the map-list holder, so clicking a tier only restyles/refills — it never recreates
@@ -163,6 +214,10 @@ const RIGHT_CARD_STYLE =
 
 @PanelHandler()
 class StatsHandler {
+	// Bumped on each top-10 popup open, so a slow in-flight fetch that resolves after the popup was closed
+	// (or a different map was opened) is discarded instead of filling the wrong board.
+	lbGen = 0;
+
 	constructor() {
 		// The page may be pre-created (hidden) before the map cache is ready, in which case its
 		// initial scan finds nothing. Re-scan when the page is actually shown if we have no maps yet.
@@ -172,6 +227,9 @@ class StatsHandler {
 				this.scan();
 			}
 		});
+		// Leaving the page (incl. Esc, which closes the whole page) must collapse the popup, otherwise its
+		// visibility would persist and it'd reappear over the page the next time Stats opens.
+		$.RegisterForUnhandledEvent('MainMenuPageHidden', () => this.closeMapLeaderboard());
 	}
 
 	// Called from the page root's onload (fires once the page is actually shown, unlike the
@@ -185,6 +243,8 @@ class StatsHandler {
 
 	rescan() {
 		scanCache = null;
+		mapLbCache = {}; // boards may have changed — drop the cached top-10s / cutoffs so they refetch
+		yourStandingCache = {}; // and the cached "vs You" standings
 		this.scan();
 	}
 
@@ -1030,6 +1090,387 @@ class StatsHandler {
 		return { total: j.totalCount || 0, wrTime: entry ? entry.time : null };
 	}
 
+	/** Map one API leaderboard entry to a row. The response embeds `user` (alias + steamID64 + avatarURL) by
+	 *  default — no `expand` (the API rejects it) and no per-player calls. */
+	lbRowFromEntry(e: any): Top10Row {
+		return {
+			rank: e.rank,
+			time: e.time,
+			userID: e.userID,
+			alias: e.user?.alias ?? `Player ${e.userID}`,
+			steamID: e.user?.steamID ?? null
+		};
+	}
+
+	/** Top 10 + board size of one map's (gm, MAIN, style) board. null = request failed (not cached, retryable). */
+	async fetchBoardTop(mapID: number, gm: Gamemode, style: Style): Promise<{ rows: Top10Row[]; total: number } | null> {
+		const url = `${API}/v1/maps/${mapID}/leaderboard?gamemode=${gm}&trackType=0&trackNum=1&style=${style}&take=10`;
+		const j = await this.fetchJson(url);
+		if (j == null || !Array.isArray(j.data)) return null;
+		return { rows: j.data.map((e: any) => this.lbRowFromEntry(e)), total: j.totalCount || 0 };
+	}
+
+	/** The single run at an exact rank (`skip=rank-1&take=1`) — used to fetch one group's cutoff person. */
+	async fetchRunAtRank(mapID: number, gm: Gamemode, style: Style, rank: number): Promise<Top10Row | null> {
+		const url = `${API}/v1/maps/${mapID}/leaderboard?gamemode=${gm}&trackType=0&trackNum=1&style=${style}&skip=${rank - 1}&take=1`;
+		const j = await this.fetchJson(url);
+		if (j == null || !Array.isArray(j.data) || !j.data[0]) return null;
+		return this.lbRowFromEntry(j.data[0]);
+	}
+
+	/** Ranks of the last person in each group G1..G6 for a board of `total`, matching `bestGroup`'s thresholds
+	 *  (`rank ≤ max(total·pct + 10, floor)`). Groups sit below the Top 10; empty groups (small boards) are
+	 *  skipped and every cutoff is capped at the board size. */
+	computeGroupCutoffs(total: number): { group: number; rank: number }[] {
+		const out: { group: number; rank: number }[] = [];
+		let prev = 10; // ranks ≤ 10 are WR / Top 10, not a group
+		for (let i = 0; i < GROUP_DEFS.length; i++) {
+			const threshold = Math.floor(Math.max(total * GROUP_DEFS[i].pct + 10, GROUP_DEFS[i].floor));
+			const cutoff = Math.min(threshold, total);
+			if (cutoff > prev) {
+				out.push({ group: i + 1, rank: cutoff });
+				prev = cutoff;
+			}
+		}
+		return out;
+	}
+
+	/** The viewed user's own standing (rank + PB time) on a board. Free from the rank scan's cache when
+	 *  present; otherwise one `userIDs=` leaderboard call (cached per user). {null,null} = not on the board. */
+	async getYourStanding(mapID: number, gm: Gamemode, style: Style, key: string): Promise<Standing> {
+		const pm = perMapRank[key];
+		if (pm && pm.time != null) return { rank: pm.rank, time: pm.time };
+		const uid = this.viewUid();
+		if (!uid) return { rank: null, time: null };
+		const ck = `${key}|${uid}`;
+		const cached = yourStandingCache[ck];
+		if (cached !== undefined) return cached;
+		const res = await this.fetchRank(mapID, gm, style, uid);
+		if (!res.ok) return { rank: null, time: null }; // request failed — don't cache, let it retry
+		const standing: Standing = { rank: res.rank, time: res.time };
+		yourStandingCache[ck] = standing;
+		return standing;
+	}
+
+	/** Identity (id/alias/steamID) of whoever is being viewed — the searched user, else the local player —
+	 *  used to render their own "where you'd place" row in the cutoffs. */
+	getViewedUserIdentity(): { userID: number; alias: string; steamID: string | null } {
+		if (viewUser) return { userID: viewUser.id, alias: viewUser.alias, steamID: viewUser.steamID ?? null };
+		try {
+			const u = MomentumAPI.GetLocalUserData();
+			return { userID: u.id, alias: u.alias ?? 'You', steamID: u.steamID ?? null };
+		} catch {
+			return { userID: this.viewUid(), alias: 'You', steamID: null };
+		}
+	}
+
+	/** Open the leaderboard popup for a map's (gm, style) board. Renders from the session cache when present
+	 *  (0 calls); otherwise one `take=10` call for the top 10, then one `take=1` call per group cutoff. The
+	 *  viewed user's own time (for "vs You") is resolved in parallel — free from the scan, or one extra call. */
+	async openMapLeaderboard(mapID: number, gm: Gamemode, style: Style, mapName: string) {
+		const popup = $('#StatsLbPopup');
+		if (!popup) return;
+		const gen = ++this.lbGen;
+
+		try {
+			popup.style.visibility = 'visible';
+		} catch {}
+		const title = $<Label>('#StatsLbTitle');
+		if (title) title.text = mapName;
+		const sub = $<Label>('#StatsLbSubtitle');
+		if (sub) {
+			const gmName = $.Localize(GamemodeInfo.get(gm)?.i18n ?? '') || `Mode ${gm}`;
+			sub.text = `${gmName} · ${styleEnglishName(style)} · Top 10 + group cutoffs`;
+		}
+		this.renderMapImages(mapID); // left-column screenshot strip (from the local scan cache, no web call)
+		const list = $('#StatsLbList');
+		if (list) list.RemoveAndDeleteChildren();
+		lbCutoffRefs = [];
+
+		const key = this.perMapKey(mapID, gm, style);
+		let entry = mapLbCache[key];
+		let standing: Standing;
+		if (!entry) {
+			this.setLbStatus('Loading leaderboard…');
+			// Board top and your-own-standing run together, so "vs You" adds no wall-clock latency.
+			const [res, yt] = await Promise.all([
+				this.fetchBoardTop(mapID, gm, style),
+				this.getYourStanding(mapID, gm, style, key)
+			]);
+			if (gen !== this.lbGen) return; // popup closed or another map opened while fetching
+			if (res == null) {
+				this.setLbStatus('Could not load the leaderboard — try again.');
+				return;
+			}
+			const cutoffs: GroupCutoff[] = this.computeGroupCutoffs(res.total).map((c) => ({
+				group: c.group,
+				rank: c.rank,
+				row: null,
+				fetched: false
+			}));
+			// Tack on the very last place (worst rank on the board) as a final row after the groups — but only
+			// when the board runs past the top 10 and that rank isn't already a group cutoff (small boards).
+			// Sentinel group 0 = the "LAST" row (see cutoffBadge); it sorts to the end (rank = total).
+			if (res.total > 10 && !cutoffs.some((c) => c.rank === res.total)) {
+				cutoffs.push({ group: 0, rank: res.total, row: null, fetched: false });
+			}
+			entry = { rows: res.rows, total: res.total, cutoffs };
+			mapLbCache[key] = entry;
+			standing = yt;
+		} else {
+			standing = await this.getYourStanding(mapID, gm, style, key);
+			if (gen !== this.lbGen) return;
+		}
+
+		if (!entry.rows.length) {
+			this.setLbStatus('No times on this leaderboard yet.');
+			return;
+		}
+		this.setLbStatus('');
+		this.renderMapLb(entry, standing);
+		this.fetchCutoffs(mapID, gm, style, key, gen, standing.time); // fill cutoff rows in place
+	}
+
+	/** Badge label + colour for a cutoff row. Sentinel group 0 is the board's absolute last place. */
+	cutoffBadge(group: number): { badge: string; color: string } {
+		return group === 0 ? { badge: 'LAST', color: '#c56b6b' } : { badge: `G${group}`, color: GROUP_COLORS[group - 1] };
+	}
+
+	/** Fetch each group's cutoff person (one `take=1` call each) and fill its row when it lands. */
+	async fetchCutoffs(mapID: number, gm: Gamemode, style: Style, key: string, gen: number, yourTime: number | null) {
+		const entry = mapLbCache[key];
+		if (!entry) return;
+		const wr = entry.rows[0]?.time ?? null;
+		const meId = this.viewUid();
+		await Promise.all(
+			entry.cutoffs
+				.filter((c) => !c.fetched)
+				.map(async (c) => {
+					const row = await this.fetchRunAtRank(mapID, gm, style, c.rank);
+					if (gen !== this.lbGen) return; // popup changed under us
+					c.row = row;
+					c.fetched = true;
+					const ref = lbCutoffRefs.find((r) => r.rank === c.rank);
+					if (ref && ref.panel.IsValid()) {
+						const b = this.cutoffBadge(c.group);
+						this.fillLbRow(ref.panel, b.badge, b.color, c.rank, c.row, wr, meId, '—', yourTime);
+					}
+				})
+		);
+	}
+
+	/** Find a scanned map's static data by id — used to pull its screenshots for the popup's image strip. */
+	mapStaticById(mapID: number): MapCacheAPI.StaticData | null {
+		for (const m of scanCache ?? []) if (m.staticData?.id === mapID) return m.staticData;
+		return null;
+	}
+
+	/** Fill the popup's left column with the map's screenshots as a vertical strip. The image urls are the
+	 *  map's CDN images (already in the local scan cache), applied via SetImage — no web request, the same
+	 *  way the loading screen shows a map thumbnail. Collapsed (no reserved width) when the map has none. */
+	renderMapImages(mapID: number) {
+		const holder = $<Panel>('#StatsLbImages');
+		if (!holder) return;
+		holder.RemoveAndDeleteChildren();
+
+		const images = this.mapStaticById(mapID)?.images ?? [];
+		try {
+			holder.style.visibility = images.length ? 'visible' : 'collapse';
+		} catch {}
+		if (!images.length) return;
+
+		for (const img of images) {
+			const url = img.medium || img.large || img.small || img.xl; // medium is plenty for a 240px strip
+			if (!url) continue;
+			const image = $.CreatePanel('Image', holder, '', {
+				style:
+					'width: 240px; height: 135px; margin-bottom: 10px; horizontal-align: center; ' +
+					'border-radius: 8px; background-color: #171b22;'
+			});
+			(image as ImagePanel).SetImage(url); // CDN url straight to the panel (not whitelist-gated, unlike AsyncWebRequest)
+		}
+	}
+
+	closeMapLeaderboard() {
+		this.lbGen++; // discard any in-flight fetch
+		const popup = $('#StatsLbPopup');
+		if (!popup) return;
+		try {
+			popup.style.visibility = 'collapse';
+		} catch {}
+		$<Panel>('#StatsLbImages')?.RemoveAndDeleteChildren(); // drop the screenshot strip so it doesn't linger
+	}
+
+	/** Show a status/empty message in the popup (collapsed when blank so it takes no space). */
+	setLbStatus(msg: string) {
+		const s = $<Label>('#StatsLbStatus');
+		if (!s) return;
+		s.text = msg;
+		try {
+			s.style.visibility = msg ? 'visible' : 'collapse';
+		} catch {}
+	}
+
+	/** Signed gap to the viewed user's own time: `−` = faster than you (ahead), `+` = slower (behind). */
+	fmtVsYou(delta: number): string {
+		return (delta < 0 ? '−' : '+') + this.fmtDiff(Math.abs(delta));
+	}
+
+	/** Build the popup body: the top 10, then a "group cutoffs" section (last person in each group, with the
+	 *  viewed user's own row slotted in where they place). `standing` = the viewed user's rank + PB time. */
+	renderMapLb(entry: MapLb, standing: Standing) {
+		const list = $('#StatsLbList');
+		if (!list) return;
+		list.RemoveAndDeleteChildren();
+		lbCutoffRefs = [];
+
+		const meId = this.viewUid();
+		const yourTime = standing.time; // drives the "vs You" column
+		const wr = entry.rows[0]?.time ?? null; // rank-1 time = the WR the diffs are measured against
+
+		// Column header (widths match the rows below).
+		const head = $.CreatePanel('Panel', list, '', {
+			style: 'flow-children: right; width: 100%; padding: 2px 10px 8px 10px;'
+		});
+		const hcol = (text: string, w: number, align = 'right') =>
+			$.CreatePanel('Label', head, '', {
+				text,
+				style: `width: ${w}px; font-size: 12px; color: #7d8794; text-align: ${align}; vertical-align: center;`
+			});
+		hcol('', LB_W_BADGE, 'center');
+		hcol('#', LB_W_RANK, 'center');
+		$.CreatePanel('Panel', head, '', { style: `width: ${LB_W_AV}px; height: 1px;` });
+		$.CreatePanel('Label', head, '', {
+			text: 'Player',
+			style: 'width: fill-parent-flow(1); font-size: 12px; color: #7d8794; text-align: left; vertical-align: center;'
+		});
+		hcol('Time', LB_W_TIME);
+		hcol('+ WR', LB_W_DIFF);
+		hcol(viewUser ? 'vs Them' : 'vs You', LB_W_YOU);
+
+		// Top 10: badge = WR (rank 1) / T10 (rank ≤ 10).
+		for (const r of entry.rows) {
+			const badge = r.rank === 1 ? 'WR' : 'T10';
+			const badgeColor = r.rank === 1 ? RANK_WR_COLOR : RANK_T10_COLOR;
+			const rp = $.CreatePanel('Panel', list, '', { style: LB_ROW_STYLE });
+			this.fillLbRow(rp, badge, badgeColor, r.rank, r, wr, meId, '—', yourTime);
+		}
+
+		// Group cutoffs (last place per group), with the viewed user's OWN row slotted in at the rank they'd
+		// place — but only when they're outside the top 10 (they already appear there) and actually on the board.
+		const yr = standing.rank;
+		const showYou = yr != null && standing.time != null && yr > 10 && !entry.cutoffs.some((c) => c.rank === yr);
+		if (entry.cutoffs.length || showYou) {
+			$.CreatePanel('Label', list, '', {
+				text: `Group cutoffs · last place · where ${viewUser ? 'they' : 'you'} place`,
+				style: `font-size: 12px; color: #7d8794; text-transform: uppercase; letter-spacing: 1px; margin: 12px 10px 6px 10px; padding-top: 10px; border-top: 1px solid ${C_BORDER};`
+			});
+
+			// Merge the group cutoffs with the "you" row and render in rank order.
+			type Slot = { rank: number; cutoff?: GroupCutoff; you?: boolean };
+			const slots: Slot[] = entry.cutoffs.map((c) => ({ rank: c.rank, cutoff: c }));
+			if (showYou) slots.push({ rank: yr as number, you: true });
+			slots.sort((a, b) => a.rank - b.rank);
+
+			for (const s of slots) {
+				const rp = $.CreatePanel('Panel', list, '', { style: LB_ROW_STYLE });
+				if (s.you) {
+					const rank = yr as number;
+					const g = this.bestGroup(rank, entry.total); // the group the viewed user falls into
+					const id = this.getViewedUserIdentity();
+					const youRow: Top10Row = {
+						rank,
+						time: standing.time as number,
+						userID: id.userID,
+						alias: id.alias,
+						steamID: id.steamID
+					};
+					this.fillLbRow(rp, g >= 1 ? `G${g}` : '—', g >= 1 ? GROUP_COLORS[g - 1] : '#6f7885', rank, youRow, wr, meId, '—', yourTime);
+				} else {
+					const c = s.cutoff as GroupCutoff;
+					const b = this.cutoffBadge(c.group);
+					this.fillLbRow(rp, b.badge, b.color, c.rank, c.row, wr, meId, c.fetched ? '—' : '…', yourTime);
+					lbCutoffRefs.push({ rank: c.rank, panel: rp });
+				}
+			}
+		}
+	}
+
+	/** (Re)build one leaderboard row's cells. `row` null → placeholder (`ph`: '…' pending, '—' failed).
+	 *  `yourTime` = the viewed user's PB, for the signed "vs You" column (null → blank). */
+	fillLbRow(
+		rp: Panel,
+		badge: string,
+		badgeColor: string,
+		rank: number,
+		row: Top10Row | null,
+		wr: number | null,
+		meId: number,
+		ph: string,
+		yourTime: number | null
+	) {
+		if (!rp?.IsValid()) return;
+		rp.RemoveAndDeleteChildren();
+		const mine = row != null && row.userID === meId;
+		try {
+			rp.style.backgroundColor = mine ? '#1c2b30' : '#171b22'; // highlight the viewed player's row
+		} catch {}
+
+		$.CreatePanel('Label', rp, '', {
+			text: badge,
+			style: `width: ${LB_W_BADGE}px; font-size: 12px; font-weight: bold; color: ${badgeColor}; text-align: center; vertical-align: center;`
+		});
+		$.CreatePanel('Label', rp, '', {
+			text: `#${rank}`,
+			style: `width: ${LB_W_RANK}px; font-size: 14px; font-weight: bold; color: ${rank === 1 ? RANK_WR_COLOR : '#cdd5df'}; text-align: center; vertical-align: center;`
+		});
+
+		if (row?.steamID) {
+			const av = $.CreatePanel('AvatarImage', rp, '', {
+				style: 'width: 26px; height: 26px; border-radius: 4px; margin-right: 14px; vertical-align: center;'
+			});
+			try {
+				av.steamid = row.steamID as steamID;
+			} catch {}
+		} else {
+			$.CreatePanel('Panel', rp, '', {
+				style: 'width: 26px; height: 26px; border-radius: 4px; margin-right: 14px; vertical-align: center; background-color: #232a33;'
+			});
+		}
+
+		$.CreatePanel('Label', rp, '', {
+			text: row ? row.alias : ph,
+			style: `width: fill-parent-flow(1); font-size: 14px; color: ${mine ? '#ffffff' : row ? '#dfe5ec' : '#6f7885'}; vertical-align: center; text-overflow: ellipsis;`
+		});
+		$.CreatePanel('Label', rp, '', {
+			text: row ? this.fmtTime(row.time) : ph,
+			style: `width: ${LB_W_TIME}px; font-size: 14px; color: ${row ? '#b8c0cc' : '#6f7885'}; text-align: right; vertical-align: center;`
+		});
+		const wrDiff = row == null ? '' : rank === 1 || wr == null ? '—' : `+${this.fmtDiff(Math.max(0, row.time - wr))}`;
+		$.CreatePanel('Label', rp, '', {
+			text: wrDiff,
+			style: `width: ${LB_W_DIFF}px; font-size: 13px; color: ${rank === 1 ? '#6f7885' : '#e0a86f'}; text-align: right; vertical-align: center;`
+		});
+
+		// vs You: signed gap to the viewed user's own time. Blank if you're not on the board; "—" on your
+		// own row; otherwise −faster / +slower, coloured (they beat you = red, you beat them = green).
+		let youText = '';
+		let youColor = '#6f7885';
+		if (row != null && yourTime != null) {
+			if (mine) {
+				youText = '—';
+			} else {
+				const delta = row.time - yourTime;
+				youText = this.fmtVsYou(delta);
+				youColor = delta < 0 ? '#e0736f' : delta > 0 ? '#8fd694' : '#8a93a0';
+			}
+		}
+		$.CreatePanel('Label', rp, '', {
+			text: youText,
+			style: `width: ${LB_W_YOU}px; font-size: 13px; color: ${youColor}; text-align: right; vertical-align: center;`
+		});
+	}
+
 	rankKey(mode: Gamemode, style: Style | null, filter: RankFilter): string {
 		return `${mode}|${style}|${filter}`;
 	}
@@ -1488,9 +1929,25 @@ class StatsHandler {
 					style: 'width: 30px; font-size: 12px; color: #7d8794; text-align: center; vertical-align: center; margin-right: 8px;'
 				});
 			}
-			$.CreatePanel('Label', row, '', {
+			// Clicking the map name opens the top-10 popup for this (gm, style) board. Attached to the name
+			// label (not the whole row) so it never conflicts with the play button's own click.
+			const nameColor = e.done ? '#dfe5ec' : '#aeb6c2';
+			const nameLabel = $.CreatePanel('Label', row, `StatsMapName${e.data.staticData.id}_${gm}`, {
 				text: e.name,
-				style: `width: fill-parent-flow(1); font-size: 14px; color: ${e.done ? '#dfe5ec' : '#aeb6c2'}; vertical-align: center; text-overflow: ellipsis;`
+				style: `width: fill-parent-flow(1); font-size: 14px; color: ${nameColor}; vertical-align: center; text-overflow: ellipsis;`
+			});
+			nameLabel.SetPanelEvent('onactivate', () => this.openMapLeaderboard(e.data.staticData.id, gm, e.style, e.name));
+			nameLabel.SetPanelEvent('onmouseover', () => {
+				try {
+					nameLabel.style.color = C_ACCENT;
+				} catch {}
+				UiToolkitAPI.ShowTextTooltip(nameLabel.id, 'View top 10 times');
+			});
+			nameLabel.SetPanelEvent('onmouseout', () => {
+				try {
+					nameLabel.style.color = nameColor;
+				} catch {}
+				UiToolkitAPI.HideTextTooltip();
 			});
 			// In the "All" view, show which gamemode each map belongs to.
 			if (isAll) {

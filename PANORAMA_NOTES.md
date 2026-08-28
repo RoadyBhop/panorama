@@ -12,8 +12,10 @@ session: it covers the folder layout, the important in‑game + web APIs, the HU
 ## 0. Environment & workflow
 
 - **Override root:** `steamapps/common/Momentum Mod Playtest/momentum/custom/panoDev/panorama/`
-  (`custom/panoDev/` mounts over `momentum/`, so files here shadow the base game's). It contains only
-  `panorama/` — **not** `cfg/`, `resource/`, etc. Those live in the base game and are edited in place.
+  (`custom/panoDev/` mounts over `momentum/`, so files here shadow the base game's). It's mostly
+  `panorama/`, plus a **`cfg/hud/hud_default.kv3` override** (`custom/panoDev/cfg/hud/hud_default.kv3` — the
+  customizer defaults, see §4; edit THIS copy, not the base one). Other `cfg/` files (e.g. `config.cfg`)
+  and `resource/` localization are **not** overridden — those live in the base game and are edited in place.
 - **Reload after edits:** `panorama_reload` (or F7) reloads `.ts` / `.xml` / `.scss` live.
 - **Needs a full game restart:** `cfg/hud/*.kv3` defaults, `resource/*.txt` localization, and
   `domain_whitelist.kv3` (read only at startup — `panorama_reload` does NOT re‑read it).
@@ -158,7 +160,8 @@ targetPanel?, styleProperty?, valueFn?, settingProps?, options?, children?, expa
   `onChanged(value)` runs only on change. `postInit` runs once after all styles init.
 
 **CRITICAL default behavior:**
-- Defaults come from `momentum/cfg/hud/hud_default.kv3` (BASE game, not the override), keyed by the
+- Defaults come from `custom/panoDev/cfg/hud/hud_default.kv3` (the **override** copy — it shadows the base
+  `momentum/cfg/hud/hud_default.kv3`; edit the override), keyed by the
   panel `id`. **Every non‑NONE dynamicStyle MUST have a value there or the customizer throws**
   ("Could not load dynamic style value…"). Also the component needs an `enabled/offsetX/offsetY/width/
   height` block there or `reset()` throws. kv3 syntax: `key = value` / `key = "str"` /
@@ -197,6 +200,12 @@ it was "broken") → don't rely on the `events` HudProcessInput; drive updates w
   `H = actuallayoutheight / actualuiscale_y` (same as `components/graphs/line-graph.ts`).
 - `SetMaxDrawCommands` generously — a shaded quad can be several commands; too low drops draws at
   regular positions (looks like static vertical gaps).
+- **`DrawPoly` is winding‑sensitive** — it culls the reverse vertex order, so a quad traced clockwise
+  paints while the same quad traced counter‑clockwise draws nothing. Bars that grow in BOTH directions
+  from a baseline (e.g. strafe‑offset up=late / down=early) must trace every quad with a FIXED winding
+  (normalise to `[yTop, yBot]` and use one vertex order) — otherwise the opposite‑direction bars silently
+  vanish. (`DrawShadedPoly` behaves the same; the trainer graph never hit this because its bars only ever
+  grow one way.)
 - **UICanvas does NOT paint its own `backgroundColor`** — put a background on a wrapper panel behind it.
 - Tiling gotcha: bars drawn per fixed screen slot with gaps show **static vertical lines** as data
   scrolls; tile edge‑to‑edge with a small overlap (opaque colors hide seams).
@@ -251,6 +260,51 @@ restyles the tier rows, via `refreshTierExpansion`).
   **No group** (below G6) once phase 2 lands, "not ranked" when you're not on the current board. The WR‑diff
   column is blank for the WR itself (the group cell already says WR). `tierRankRows` holds the live cell
   refs (like the css‑map‑selector Players column).
+- **Top‑10 popup (click a map name).** Each tier‑map row's **name label** is clickable (attached to the
+  label, NOT the row, so it never conflicts with the play button's own click; onactivate bubbles up) →
+  `openMapLeaderboard(mapID, gm, style, name)`. Full‑page overlay `#StatsLbPopup`, toggled via
+  **`style.visibility` visible/collapse** (reliable). A layout `<root>` allows only ONE top‑level panel and
+  it must have **no id**, so the page and the popup are wrapped in a single **id‑less root `<Panel>`** with
+  default (overlap) flow — the popup then covers the page. Rows = badge (WR/T10/G1..G6) · #rank · avatar ·
+  player · time · **+WR diff** (vs rank‑1) · **vs You** (signed gap to the viewed user's own PB — `−` faster,
+  `+` slower; header reads "vs Them" for a searched user), unified via `fillLbRow`. The viewed user's time is
+  free from `perMapRank[key].time` when the scan has it, else one `userIDs=` call via `getYourTime` (cached in
+  `yourTimeCache[key|uid]`, run in PARALLEL with the board fetch so it adds no latency). Data:
+  `GET /v1/maps/{id}/leaderboard?…&take=10` — **the response embeds `user` (alias + `steamID` + avatarURL) by
+  DEFAULT; `expand` is REJECTED (400 "property expand should not exist")**. Avatars come from
+  `<AvatarImage>`/`.steamid = user.steamID` (Steam client supplies them — **no web call**; the avatarURL host
+  isn't whitelisted anyway).
+- **Popup map-image strip (left column).** The popup card is now **two columns** (`flow-children: right`,
+  widened to 1080px): a left **`#StatsLbImages`** vertical strip of the map's screenshots + the right
+  leaderboard content column (title/subtitle/status/`#StatsLbList`, unchanged). `renderMapImages(mapID)`
+  (called at the top of `openMapLeaderboard`) pulls `mapStaticById(mapID)?.images` — the **`MapImage[]`
+  already in the local scan cache**, each with full CDN urls (`small/medium/large/xl`) — and `SetImage`s
+  the `medium` url (plenty for a 240px strip) onto a 240×135 `<Image>` per screenshot (cast to `ImagePanel`
+  to call `SetImage`). Modelled
+  on the map selector's **Gallery** button (`components/gallery.ts` → `openGallery`), but that path needs the
+  `MomentumMapSelector` C++ panel's `applyMapImageToImagePanel` (not available in this context); here we just
+  `SetImage` the CDN url directly, exactly like `loading-screen.ts` does with `thumbnail.large`. **Image
+  `SetImage(httpUrl)` is NOT domain-whitelist-gated** (only `$.AsyncWebRequest` is), so no web-request plumbing.
+  The strip **collapses** (`visibility: collapse`, no reserved width — the content column fills) when the map
+  has no images, and is cleared in `closeMapLeaderboard`.
+- **Group cutoffs (last place in each group) + where you place.** Below the top 10 the popup lists the **cutoff
+  person for each group G1..G6** — the worst rank still inside that group — and slots the **viewed user's own
+  row** in at the rank they'd place (`getViewedUserIdentity` for alias/steamID + `getYourStanding` for rank),
+  merged into the cutoff list in rank order, badged with their `bestGroup`. Only shown when they're OUTSIDE the
+  top 10 (they already appear there — highlighted) and actually on the board. The cutoff RANK is computed from
+  the board size (`computeGroupCutoffs`) with the SAME thresholds as `bestGroup` (`floor(max(total·pct+10,
+  floor))`, capped at `total`, above the Top‑10 boundary, empty groups skipped), so only **one
+  `skip=rank-1&take=1` call per group** is needed (not the whole board). **After G6 the board's absolute last
+  place** (worst rank = `total`) is appended as a final **`LAST`** row (muted red badge) — added as a cutoff
+  with **sentinel `group: 0`** (`cutoffBadge(group)` maps 0→`LAST`, 1..6→`G#`), so it reuses the same
+  `fetchCutoffs`/`lbCutoffRefs` in-place fill. Only added when the board runs past the top 10 AND that rank
+  isn't already a group cutoff (on small boards the last group cutoff already IS last place, so no dup; the
+  `showYou` dedup also then covers a viewed user who is last). Fetched in parallel via `fetchCutoffs`,
+  each filled **in place** into its kept `lbCutoffRefs` row as it lands ('…' pending → '—' if it fails). Everything is cached in
+  **`mapLbCache[perMapKey]`** (`{rows,total,cutoffs}`) for the session (0 calls on re‑open); the completion
+  count is LOCAL cache (no HTTP) and the rank scan only pulled `take=1`/your‑rank, so none of this is available
+  without these on‑demand calls. `lbGen` guards stale/overlapping fetches; a `MainMenuPageHidden` handler
+  collapses the popup on Esc/leave so it can't reappear over a fresh open. Cleared on rescan.
 - **Tier‑row tooltip flicker fix / persistent tier rows.** Clicking a tier used to rebuild the whole
   right card, recreating the hovered row — so its "Show tier X maps" hover tooltip flashed at the press
   point for one frame (the tooltip re‑anchored to the not‑yet‑laid‑out new panel) before snapping back.
@@ -289,14 +343,50 @@ same‑direction turn‑switch within `PAIR_WINDOW_TICKS`, offset = `keyTick −
 Early Nt / Perfect". Gamemodes BHOP+SURF+CLIMB. **Driven by a self‑scheduled `$.Schedule` loop** because
 this panel doesn't get `HudProcessInput`. Sign convention (early/late) is the one thing to re‑verify
 in‑game (flip the `dYaw<0` mapping if reversed).
+- **Both axes resize** (`resizeX:true`, `resizeY:true`): `.strafeoffset` is `width:100% height:100%` so it
+  fills the panel the customizer sizes (defaults `width 240 height 90` in the kv3 block); `draw()` reads
+  the live canvas size each frame, so the bars rescale as you drag the knobs. (Do NOT reinstate a fixed
+  CSS height — that pins the graph and the resize knob does nothing.)
+- **Per‑tick grid:** `draw()` lays one faint **full‑width solid line** at every whole‑tick offset (rows
+  `half/maxOffset` px apart, thickness `GRID_THICKNESS`=1) behind the bars, so magnitudes read at a glance.
+  Skipped when a row would be < `GRID_MIN_TICK_PX`(3)px tall (too dense). Colour = the solid line colour
+  dimmed to `GRID_ALPHA_FACTOR`(0.5×) via a `dim()` helper — **build the rgba string with a short
+  `alpha.toFixed(3)`**; a long float alpha (`0.2007843…`) can trip the colour parser and draw nothing.
+  ⚠️ **Do NOT make these dotted:** a dashed line is dozens of tiny `DrawLinePoints` per row, and with ~14
+  rows every frame it dropped FPS ~500→200. One solid line per row is ~free (`SetMaxDrawCommands` back to
+  512). If you want a dashed *look*, do it some other way (e.g. a tiled texture), never per‑dash draw calls.
+- **Visibility gotcha (nothing renders, but logs fire):** the C++ `MomHudStrafeSync` panel gates its own
+  visibility on the legacy convar **`mom_hud_strafesync_draw`**, which ships as **0** in `cfg/config.cfg`
+  — so C++ forces the whole panel invisible (no bars, no lines, no text) *regardless of our layout*, while
+  the self‑scheduled loop keeps running and `$.Msg`‑logging the right offsets. THIS is the "old disabled
+  hud" trap. Fix: the constructor runs `GameInterfaceAPI.ConsoleCommand('mom_hud_strafesync_draw 1')` on
+  every (re)load (survives `panorama_reload`, which re‑runs the ctor but does NOT re‑read `config.cfg`),
+  and `config.cfg` was flipped to `"1"` so it's on at a fresh launch too. After that the customizer's
+  `enabled` toggle governs show/hide like any other component. (Other HUD panels use the same per‑panel
+  convar pattern — e.g. `mom_hud_speedometer_show 1`; strafesync was the only one shipping at 0.)
 
 ### 6d. Main menu — CSS background + CS:S menu — `pages/main-menu/main-menu.{ts,xml}`, `styles/pages/main-menu.scss`
 - Background from persistent `settings.mainMenuBackground` (enum `BackgroundMode` LIGHT=0/DARK=1/CSS=2)
   + `settings.mainMenuMovie` (bool). Video → `videos/backgrounds/<Name>.webm`; static →
   `images/backgrounds/<Name>.dds` (`.png` works; `.tga` unproven). Added custom static
-  `background01.dds` (mode CSS, no video variant).
+  `background01.dds` (mode CSS, no video variant). `setMainMenuBackground()` was refactored into
+  `showBackgroundVideo(file)` / `showBackgroundImage(file)` helpers + `isVideoFile()`.
 - Bottombar button `toggleCssBackground()` using `images/game-logos/css.png`; toggles CSS on/off (off
   reverts to system light/dark).
+- **Background selector (override any background by file name).** Persistent `settings.mainMenuBackgroundOverride`
+  (`BG_OVERRIDE_KEY`) holds a **file name with extension**; when set it wins over the themed default in
+  `setMainMenuBackground` (`.webm`→video from `videos/backgrounds/`, image ext→static from `images/backgrounds/`).
+  Opened from **both menus**: a bottombar button (`movie-open-outline.svg`, normal menu) and a **BACKGROUND**
+  `#CssMenu` item (CS:S menu). UI = the `#BackgroundSelector` overlay (`.bgselector`, a centred card +
+  click‑backdrop, **hidden via `visibility:collapse` + toggled with the `bgselector--open` class** — a plain
+  `visible="false"` attribute did NOT keep it closed on load) with a `TextEntry` name input, an Apply button, quick‑pick buttons for the
+  `KNOWN_BACKGROUNDS` (Panorama **can't list a folder from JS**, so these are hardcoded — extend as art is
+  added), a status line, and a **Reset to theme default** button (clears the override). **"Error if not found"**
+  for images uses the `#BackgroundProbe` preview Image: `applyBackgroundByName` routes by extension, and for an
+  image `SetImage`s the probe — its **`PanelLoaded`** handler (registered in `onPanelLoad`) commits the override,
+  its **`ImageFailedLoad`** handler reports "not found" (guarded by `pendingBackground`). webm can't be probed
+  (no image‑load event), so it's applied directly. The light/dark + CSS toggles clear the override first so they
+  still visibly change the background. `onEscapeKeyPressed` closes the selector before anything else.
 - **CS:S menu:** in CSS mode `setMainMenuBackground` adds class `mainmenu--css` to the root; all show/
   hide is in CSS (`main-menu.scss`): hides `.topnav`/`.topnav__shadow` (but NOT in pause —
   `.mainmenu--css:not(.MainMenuRootPanel--PauseMenuMode)`), hides `.home__wrapper` (spinning
@@ -304,7 +394,8 @@ in‑game (flip the `dYaw<0` mapping if reversed).
   (all bottombar btns except the CSS toggle), shows `#CssMenu`. `#CssMenu` (in HomeContent, so auto‑hidden
   in pause via `.MainMenuModeOnly` and when a page opens via `home--hidden`) = a Bebas‑Neue
   (`$font-header`) "Momentum Mod" title + list: FIND MAPS→CS:S map selector (§6e), FIND LOBBIES→CS:S
-  lobby browser (§6f), OPTIONS→settings, STATS→stats, QUIT→`onQuitButtonPressed()`. (Menu items are
+  lobby browser (§6f), OPTIONS→settings, STATS→stats, BACKGROUND→`openBackgroundSelector()` (§6d
+  background selector), QUIT→`onQuitButtonPressed()`. (Menu items are
   plain `.cssmenu__item` buttons — add one by copying a `<Button>` in `#CssMenu`, no SCSS needed.)
   The right‑side drawer (`.drawer` — rightnav strip + lobby) is hidden in
   main‑menu CSS mode via `.mainmenu--css:not(.MainMenuRootPanel--PauseMenuMode)`, and its 50px strip
@@ -368,9 +459,20 @@ handler) it calls `RefreshList({})` (no‑op on the C++ 10s cooldown → keeps t
 
 ## 7. Gotchas cheat‑sheet
 - XML comments can't contain `--` → whole layout fails to load.
-- Every non‑NONE customizer style needs a `hud_default.kv3` default (base game, needs restart).
+- A layout `<root>` allows only ONE top‑level panel ("Found duplicate panel description" if two), and that
+  topmost panel must have **no `id`** ("Top most panel should not have an ID. This ID is set in code" — the
+  loader/`CreatePanel` names it). It CAN have `class`/`style`/`onload`. To overlay a popup over a whole page,
+  wrap the page + popup in one id‑less root panel (default overlap flow), not two top‑level panels.
+- A `visible="false"` XML attribute did NOT reliably keep a custom overlay hidden on load (it showed up on
+  game open). Hide overlays with a base `visibility: collapse` class and toggle a `--open` class via
+  `AddClass`/`RemoveClass` (the codebase pattern) — and don't mix the two (a false `visible` property will
+  keep it hidden even after the class says visible).
+- Every non‑NONE customizer style needs a `hud_default.kv3` default (override copy at
+  `custom/panoDev/cfg/hud/`, needs restart).
 - `NumberEntry` clamps to `min` per keystroke → use `min:1`, clamp in callback.
 - Custom HUD components: `MomHudStrafeSync` doesn't fire `HudProcessInput` → self‑schedule updates.
+- `MomHudStrafeSync` also **self‑hides** unless `mom_hud_strafesync_draw` is `1` (ships as 0) — C++ forces
+  the panel invisible even while the JS loop runs/logs. Force the convar on in the ctor (see §6c).
 - `UICanvas` has no background → use a wrapper; `Clear` per frame; size via `actuallayout*/actualuiscale_*`.
 - Climb completion: local cache stores at style 0; web `/v1/runs` stores at style 8/9.
 - `GetCurrentTime()` is frame time — snap to ticks for tick‑accurate offsets.
@@ -408,7 +510,7 @@ panorama/
   styles/pages/map-selector/css-map-selector.scss       (CS:S map selector — §6e; in _index.scss)
   styles/pages/lobby-list/css-lobby-list.scss           (CS:S lobby browser — §6f; own _index.scss)
   images/backgrounds/background01.dds, images/game-logos/css.png
-momentum/cfg/hud/hud_default.kv3          (customizer defaults — base game, restart to apply)
+custom/panoDev/cfg/hud/hud_default.kv3    (customizer defaults — OVERRIDE copy, edit this; restart to apply)
 momentum/resource/momentum_english.txt    (localization — base game, restart to apply)
 momentum/panorama/domain_whitelist.kv3    (web request allowlist — startup only)  [also custom/panoDev copy]
 ```

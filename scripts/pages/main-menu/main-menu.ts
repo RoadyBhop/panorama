@@ -16,6 +16,25 @@ enum BackgroundMode {
 	CSS = 2 // custom static background01 (no video variant)
 }
 
+// Persistent key holding a user-picked background FILE NAME (with extension) that overrides the themed
+// default. Empty / absent = no override. `.webm` → played from videos/backgrounds; any image extension →
+// shown from images/backgrounds.
+const BG_OVERRIDE_KEY = 'settings.mainMenuBackgroundOverride';
+
+// Image file extensions the selector accepts (Panorama can't list a folder, so we route by extension).
+const BG_IMAGE_EXTS = ['dds', 'png', 'tga', 'jpg', 'jpeg', 'vtex'];
+
+// Known files shipped in videos/backgrounds and images/backgrounds, offered as quick-pick buttons.
+// NOT exhaustive — the name input accepts any file present in those folders. Keep in sync if you add art.
+const KNOWN_BACKGROUNDS: string[] = [
+	'MomentumLight.webm',
+	'MomentumDark.webm',
+	'MomentumXmas.webm',
+	'background01.dds',
+	'background_triple.png',
+	'MomentumNeutral_4K.png'
+];
+
 @PanelHandler()
 class MainMenuHandler implements OnPanelLoad {
 	readonly panels = {
@@ -35,6 +54,9 @@ class MainMenuHandler implements OnPanelLoad {
 	};
 
 	activePage: Page | null = null;
+
+	// File name currently being validated on the hidden probe Image (background selector).
+	pendingBackground: string | null = null;
 
 	constructor() {
 		$.RegisterForUnhandledEvent('ShowMainMenu', () => this.onShowMainMenu());
@@ -77,6 +99,14 @@ class MainMenuHandler implements OnPanelLoad {
 		}
 
 		this.setMainMenuBackground();
+
+		// Background selector: validate typed image names on a hidden probe. PanelLoaded ⇒ the file
+		// exists (apply it); ImageFailedLoad ⇒ it doesn't (show a "not found" error). See §6d.
+		const probe = $<Image>('#BackgroundProbe');
+		if (probe) {
+			$.RegisterEventHandler('PanelLoaded', probe, () => this.onBackgroundProbeLoaded());
+			$.RegisterEventHandler('ImageFailedLoad', probe, () => this.onBackgroundProbeFailed());
+		}
 
 		await this.checkUserLegalConsent();
 
@@ -297,56 +327,186 @@ class MainMenuHandler implements OnPanelLoad {
 			$.persistentStorage.setItem('settings.mainMenuBackground', backgroundVar);
 		}
 
-		// Custom static-image backgrounds (no video variant) — add more entries here as needed.
-		// These are .dds like the built-in backgrounds (.png also works).
-		const customBackgrounds: Record<number, string> = {
-			[BackgroundMode.CSS]: 'background01.dds'
-		};
-		const customImage = customBackgrounds[backgroundVar];
+		// The CSS mode gets a CS:S-style menu: the class drives all the show/hide via CSS (hides the top
+		// nav, spinning logo, news, and the other bottombar buttons; shows #CssMenu), scoped so the
+		// pause-menu nav is left alone. The lobby drawer is untouched. Independent of any background override.
+		const cssMode = backgroundVar === BackgroundMode.CSS;
+		if (this.panels.cp?.IsValid()) this.panels.cp.SetHasClass('mainmenu--css', cssMode);
 
-		// The CSS/custom background gets a CS:S-style menu: the class drives all the show/hide via CSS
-		// (hides the top nav, spinning logo, news, and the other bottombar buttons; shows #CssMenu), scoped
-		// so the pause-menu nav is left alone. The lobby drawer is untouched.
-		if (this.panels.cp?.IsValid()) this.panels.cp.SetHasClass('mainmenu--css', !!customImage);
-
-		// A custom static background has no movie, so force the static image path for it.
-		const showVideo = useVideo && !customImage;
-
-		this.panels.movie.visible = showVideo;
-		this.panels.movie.SetReadyForDisplay(showVideo);
-
-		this.panels.image.visible = !showVideo;
-		this.panels.image.SetReadyForDisplay(!showVideo);
-
-		if (customImage) {
-			this.panels.image.SetImage(`file://{images}/backgrounds/${customImage}`);
+		// 1) A user-chosen background override (a file name picked in the background selector) wins over the
+		//    themed default. `.webm` → video, any image extension → static image.
+		const override = $.persistentStorage.getItem<string>(BG_OVERRIDE_KEY);
+		if (override) {
+			if (this.isVideoFile(override)) this.showBackgroundVideo(override);
+			else this.showBackgroundImage(override);
 			return;
 		}
 
-		let name: string;
+		// 2) CSS mode's default is the custom static background01 (no video variant).
+		if (cssMode) {
+			this.showBackgroundImage('background01.dds');
+			return;
+		}
 
-		// If it's xmas and you're using one of the default backgrounds, replace it with the xmas version
+		// 3) Otherwise the themed Momentum background (seasonal swap near Christmas), video or static.
+		let name: string;
 		const date = new Date();
-		if (date.getMonth() === 11 && date.getDate() >= 18 && backgroundVar <= 1) {
+		if (date.getMonth() === 11 && date.getDate() >= 18) {
 			name = 'MomentumXmas';
 		} else {
-			// Using a switch as we're likely to add more of these in the future
-			switch (backgroundVar) {
-				case BackgroundMode.DARK:
-					name = 'MomentumDark';
-					break;
-				default:
-					name = 'MomentumLight';
-					break;
-			}
+			name = backgroundVar === BackgroundMode.DARK ? 'MomentumDark' : 'MomentumLight';
 		}
 
-		if (showVideo) {
-			this.panels.movie.SetMovie(`file://{resources}/videos/backgrounds/${name}.webm`);
-			this.panels.movie.Play();
-		} else {
-			this.panels.image.SetImage(`file://{images}/backgrounds/${name}.dds`);
+		if (useVideo) this.showBackgroundVideo(`${name}.webm`);
+		else this.showBackgroundImage(`${name}.dds`);
+	}
+
+	/** True if `file` is a video (webm) rather than a static image, by extension. */
+	isVideoFile(file: string): boolean {
+		return file.split('.').pop()?.toLowerCase() === 'webm';
+	}
+
+	/** Show `file` (in videos/backgrounds) as the animated movie background. */
+	showBackgroundVideo(file: string) {
+		this.panels.movie.visible = true;
+		this.panels.movie.SetReadyForDisplay(true);
+		this.panels.image.visible = false;
+		this.panels.image.SetReadyForDisplay(false);
+		this.panels.movie.SetMovie(`file://{resources}/videos/backgrounds/${file}`);
+		this.panels.movie.Play();
+	}
+
+	/** Show `file` (in images/backgrounds) as the static image background. */
+	showBackgroundImage(file: string) {
+		this.panels.movie.visible = false;
+		this.panels.movie.SetReadyForDisplay(false);
+		this.panels.image.visible = true;
+		this.panels.image.SetReadyForDisplay(true);
+		this.panels.image.SetImage(`file://{images}/backgrounds/${file}`);
+	}
+
+	// --- Background selector (name input + quick-picks) -------------------------------------------------
+	// Panorama can't enumerate a folder from JS, so the selector is a name input: type a file name (with
+	// extension) from videos/backgrounds or images/backgrounds. Image names are validated on the preview
+	// Image (ImageFailedLoad ⇒ "not found"); webm names can't be probed, so they're applied directly.
+
+	/** Open the selector overlay (reachable from the bottombar and the CS:S menu). */
+	openBackgroundSelector() {
+		const sel = $('#BackgroundSelector');
+		if (!sel) return;
+		sel.AddClass('bgselector--open'); // show first, so the preview Image below actually renders/loads
+		this.populateBackgroundPresets();
+		this.setBackgroundStatus('', false);
+		const current = $.persistentStorage.getItem<string>(BG_OVERRIDE_KEY) ?? '';
+		const input = $<TextEntry>('#BackgroundNameInput');
+		if (input) input.text = current;
+		// Preview the current image (the probe's PanelLoaded fires but pendingBackground is null → no-op).
+		const probe = $<Image>('#BackgroundProbe');
+		if (probe && current && !this.isVideoFile(current)) probe.SetImage(`file://{images}/backgrounds/${current}`);
+	}
+
+	closeBackgroundSelector() {
+		const sel = $('#BackgroundSelector');
+		if (sel) sel.RemoveClass('bgselector--open');
+	}
+
+	/** (Re)build the quick-pick buttons for the known files, highlighting the active one. */
+	populateBackgroundPresets() {
+		const holder = $('#BackgroundSelectorPresets');
+		if (!holder) return;
+		holder.RemoveAndDeleteChildren();
+		const current = $.persistentStorage.getItem<string>(BG_OVERRIDE_KEY) ?? '';
+		for (const file of KNOWN_BACKGROUNDS) {
+			const btn = $.CreatePanel('Button', holder, `BgPreset_${file.replace(/\W/g, '_')}`, {
+				class: 'bgselector__preset'
+			});
+			if (file === current) btn.AddClass('bgselector__preset--active');
+			btn.SetPanelEvent('onactivate', () => {
+				const input = $<TextEntry>('#BackgroundNameInput');
+				if (input) input.text = file;
+				this.applyBackgroundByName();
+			});
+			$.CreatePanel('Label', btn, '', { class: 'bgselector__preset-text', text: file });
 		}
+	}
+
+	/** Apply the name typed in the input, validating image names and erroring if the file isn't found. */
+	applyBackgroundByName() {
+		const input = $<TextEntry>('#BackgroundNameInput');
+		const name = (input?.text ?? '').trim();
+		if (!name) {
+			this.setBackgroundStatus('Enter a background file name.', true);
+			return;
+		}
+
+		const ext = name.split('.').pop()?.toLowerCase() ?? '';
+
+		if (ext === 'webm') {
+			// A movie can't be probed for existence, so apply it directly. If the file is missing the
+			// background simply won't play (images below get real not-found detection).
+			this.commitBackgroundOverride(name);
+			this.setBackgroundStatus(`Applied "${name}".`, false);
+			return;
+		}
+
+		if (!BG_IMAGE_EXTS.includes(ext)) {
+			this.setBackgroundStatus('Add a file extension: .webm, .dds, .png, .tga or .jpg', true);
+			return;
+		}
+
+		// Validate the image by loading it into the preview first; its PanelLoaded / ImageFailedLoad
+		// handlers (registered in onPanelLoad) commit it or report "not found".
+		const probe = $<Image>('#BackgroundProbe');
+		if (!probe) {
+			this.commitBackgroundOverride(name); // no preview available — apply without validating
+			this.setBackgroundStatus(`Applied "${name}".`, false);
+			return;
+		}
+		this.pendingBackground = name;
+		this.setBackgroundStatus(`Checking "${name}"…`, false);
+		probe.SetImage(`file://{images}/backgrounds/${name}`);
+	}
+
+	onBackgroundProbeLoaded() {
+		if (!this.pendingBackground) return;
+		const name = this.pendingBackground;
+		this.pendingBackground = null;
+		this.commitBackgroundOverride(name);
+		this.setBackgroundStatus(`Applied "${name}".`, false);
+	}
+
+	onBackgroundProbeFailed() {
+		if (!this.pendingBackground) return;
+		const name = this.pendingBackground;
+		this.pendingBackground = null;
+		this.setBackgroundStatus(`"${name}" not found in images/backgrounds.`, true);
+	}
+
+	/** Persist the override file name and repaint the background + preset highlights. */
+	commitBackgroundOverride(file: string) {
+		$.persistentStorage.setItem(BG_OVERRIDE_KEY, file);
+		this.setMainMenuBackground();
+		this.populateBackgroundPresets();
+		$.PlaySoundEvent('MenuThemeLight');
+	}
+
+	/** Clear the override and revert to the themed (light/dark/css) background. */
+	resetBackgroundOverride() {
+		$.persistentStorage.setItem(BG_OVERRIDE_KEY, '');
+		this.pendingBackground = null;
+		this.setMainMenuBackground();
+		const input = $<TextEntry>('#BackgroundNameInput');
+		if (input) input.text = '';
+		this.populateBackgroundPresets();
+		this.setBackgroundStatus('Reverted to the theme background.', false);
+	}
+
+	setBackgroundStatus(msg: string, isError: boolean) {
+		const status = $<Label>('#BackgroundSelectorStatus');
+		if (!status) return;
+		status.text = msg;
+		status.SetHasClass('bgselector__status--error', isError && !!msg);
+		status.SetHasClass('bgselector__status--hidden', !msg);
 	}
 
 	/**
@@ -355,6 +515,8 @@ class MainMenuHandler implements OnPanelLoad {
 	 */
 	toggleCssBackground() {
 		const isCss = Number.parseInt($.persistentStorage.getItem('settings.mainMenuBackground')) === BackgroundMode.CSS;
+		// Clear any background override so the toggle actually changes what's on screen.
+		$.persistentStorage.setItem(BG_OVERRIDE_KEY, '');
 		$.persistentStorage.setItem('settings.mainMenuBackground', isCss ? BackgroundMode.DARK : BackgroundMode.CSS);
 		this.setMainMenuBackground();
 		$.PlaySoundEvent('MenuThemeDark');
@@ -365,6 +527,8 @@ class MainMenuHandler implements OnPanelLoad {
 	 */
 	toggleBackgroundLightDark() {
 		const isLightMode = $.persistentStorage.getItem('settings.mainMenuBackground') === 0;
+		// Clear any background override so the light/dark toggle actually changes what's on screen.
+		$.persistentStorage.setItem(BG_OVERRIDE_KEY, '');
 		$.persistentStorage.setItem('settings.mainMenuBackground', isLightMode ? 1 : 0);
 		this.setMainMenuBackground();
 		$.PlaySoundEvent(isLightMode ? 'MenuThemeDark' : 'MenuThemeLight');
@@ -416,6 +580,13 @@ class MainMenuHandler implements OnPanelLoad {
 	}
 
 	onEscapeKeyPressed() {
+		// If the background selector is open, close that first.
+		const sel = $('#BackgroundSelector');
+		if (sel?.HasClass('bgselector--open')) {
+			this.closeBackgroundSelector();
+			return;
+		}
+
 		// Resume game in pause menu mode, OTHERWISE close the active menu menu page
 		if (GameInterfaceAPI.GetGameUIState() === GameUIState.PAUSEMENU) {
 			$.DispatchEvent('MainMenuResumeGame');
