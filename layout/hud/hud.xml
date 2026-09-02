@@ -27,6 +27,8 @@
         <MomHudChat id="Chat" />
         <MomHudStatus id="Status" />
 		<MomHudTimer id="Timer" />
+		<!-- Segment Timer: pure-Panorama HUD element (no C++ type), positioned by the JS customizer -->
+		<Frame class="segmenttimer-frame" src="file://{resources}/layout/hud/segment-timer.xml" hittest="false" hittestchildren="false" />
         <HudComparisons id="Comparisons" />
         <MomHudSpeedometer id="Speedometer" />
         <MomHudKeypress id="KeyPress"/>

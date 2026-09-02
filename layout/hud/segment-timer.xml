@@ -1,0 +1,21 @@
+<root>
+	<styles>
+		<include src="file://{resources}/styles/main.scss" />
+	</styles>
+
+	<scripts>
+		<include type="module" src="file://{scripts}/hud/segment-timer.ts" />
+	</scripts>
+
+	<!--
+		Topmost panel has NO id (loader rule) and fills the frame so the customizer can position the
+		#SegmentTimer child anywhere on screen via absolute offset.
+	-->
+	<Panel class="segmenttimer-root" hittest="false" hittestchildren="false">
+		<Panel id="SegmentTimer" class="segmenttimer">
+			<Label id="SegmentTimerSegment" class="segmenttimer__segment" text="{g:time:segtime}" />
+			<Label id="SegmentTimerSlot" class="segmenttimer__slot" text="{s:ss_label}" />
+			<Label id="SegmentTimerLog" class="segmenttimer__log" text="{s:jump_log}" />
+		</Panel>
+	</Panel>
+</root>

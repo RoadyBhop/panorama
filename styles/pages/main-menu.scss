@@ -1019,6 +1019,33 @@ $drawer-width: 768px;
 		color: rgba(255, 255, 255, 0.8);
 	}
 
+	// Anime-image search results (nekos.best). A wrapping, scrollable grid of clickable thumbnails.
+	&__nekogrid {
+		width: 100%;
+		height: 190px;
+		flow-children: right-wrap;
+		overflow: squish scroll;
+		margin-bottom: 16px;
+	}
+
+	&__nekoresult {
+		width: 118px;
+		height: 78px;
+		margin: 0 6px 6px 0;
+		border-radius: 5px;
+		border: 1px solid rgba(255, 255, 255, 0.12);
+		background-color: rgba(0, 0, 0, 0.4);
+		brightness: 0.85;
+		transition-property: brightness, border-color;
+		transition-duration: 0.12s;
+		transition-timing-function: ease-out;
+
+		&:hover {
+			brightness: 1.15;
+			border-color: rgba(111, 224, 208, 0.7);
+		}
+	}
+
 	&__actions {
 		width: 100%;
 		flow-children: right;

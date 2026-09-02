@@ -11,5 +11,8 @@
 		// Added for the Stats page's live leaderboard-rank fetching
 		"api.momentum-mod.org",
 		"momentum-proxy.jessicahops69.workers.dev",
+
+		// Added for the main-menu background selector's anime-image search (nekos.best — no auth, PNG images)
+		"nekos.best",
 	]
 }

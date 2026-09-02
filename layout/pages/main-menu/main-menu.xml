@@ -269,7 +269,10 @@
 		     Opened from the bottombar (normal menu) and the CS:S menu's BACKGROUND item. -->
 		<Panel id="BackgroundSelector" class="bgselector">
 			<Button class="bgselector__backdrop" onactivate="MainMenuHandler.closeBackgroundSelector()" />
-			<Panel class="bgselector__window">
+			<!-- hittest + empty onactivate: catch clicks on the window's own background / labels so they don't
+			     fall through to the full-screen backdrop button behind it (which closes the popup). Only a
+			     click that misses the window entirely reaches the backdrop. Same trick as the gallery. -->
+			<Panel class="bgselector__window" hittest="true" onactivate="">
 				<Label class="bgselector__title" text="Choose Background" />
 				<Label class="bgselector__hint" text="Type a file name (with extension) from videos/backgrounds or images/backgrounds — e.g. MomentumDark.webm or background01.dds." />
 				<Panel class="bgselector__inputrow">
@@ -284,6 +287,20 @@
 				<Image id="BackgroundProbe" class="bgselector__probe" scaling="stretch-to-cover-preserve-aspect" />
 				<Label class="bgselector__presets-label" text="Included backgrounds" />
 				<Panel id="BackgroundSelectorPresets" class="bgselector__presets" />
+
+				<!-- Anime image search via nekos.best (no auth, PNG images). Type a keyword and Search, or pick a
+				     category; click a result thumbnail to set it as the background (stored as a remote URL). -->
+				<Label class="bgselector__presets-label" text="Anime image search — nekos.best" />
+				<Panel class="bgselector__inputrow">
+					<TextEntry id="NekoSearchInput" class="textentry bgselector__input" maxchars="80" placeholder="Search a keyword (e.g. cat, fox), or pick a category" ontextentrysubmit="MainMenuHandler.searchNeko()" />
+					<Button class="bgselector__apply" onactivate="MainMenuHandler.searchNeko()">
+						<Label class="bgselector__apply-text" text="Search" />
+					</Button>
+				</Panel>
+				<Panel id="NekoCategories" class="bgselector__presets" />
+				<Label id="NekoStatus" class="bgselector__status bgselector__status--hidden" text="" />
+				<Panel id="NekoResults" class="bgselector__nekogrid" />
+
 				<Panel class="bgselector__actions">
 					<Button class="bgselector__button" onactivate="MainMenuHandler.resetBackgroundOverride()">
 						<Label class="bgselector__button-text" text="Reset to theme default" />

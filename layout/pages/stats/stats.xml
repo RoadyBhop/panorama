@@ -58,7 +58,10 @@
 	     toggled from stats.ts (reliable, unlike a `visible` attribute). Rows are built in TS. -->
 	<Panel id="StatsLbPopup" style="width: 100%; height: 100%; visibility: collapse;">
 		<Button id="StatsLbBackdrop" onactivate="StatsHandler.closeMapLeaderboard()" style="width: 100%; height: 100%; background-color: rgba(0, 0, 0, 0.72);" />
-		<Panel style="width: 1080px; height: 92%; horizontal-align: center; vertical-align: center; flow-children: right; padding: 22px 24px; background-color: #12161d; border: 1px solid #2a3340; border-radius: 10px;">
+		<!-- hittest + empty onactivate: catch clicks on the card's own background / labels so they don't fall
+		     through to the full-screen backdrop button behind it (which closes the popup). Only a click that
+		     misses the card entirely reaches the backdrop. Same trick as the gallery / background selector. -->
+		<Panel hittest="true" onactivate="" style="width: 1080px; height: 92%; horizontal-align: center; vertical-align: center; flow-children: right; padding: 22px 24px; background-color: #12161d; border: 1px solid #2a3340; border-radius: 10px;">
 			<!-- Left column: the map's screenshots as a vertical strip. Filled from TS via SetImage on the
 			     map's CDN urls (already in the local scan cache); collapsed when the map has no images. -->
 			<Panel id="StatsLbImages" style="flow-children: down; width: 256px; height: 100%; margin-right: 20px; overflow: squish scroll;" />
@@ -66,6 +69,9 @@
 			<Panel style="flow-children: down; width: fill-parent-flow(1); height: 100%; overflow: squish clip;">
 				<Panel style="flow-children: right; width: 100%; margin-bottom: 2px;">
 					<Label id="StatsLbTitle" text="" style="width: fill-parent-flow(1); font-size: 22px; font-weight: bold; color: #ffffff; vertical-align: center; text-overflow: ellipsis;" />
+					<Button id="StatsLbRefresh" class="button" onactivate="StatsHandler.refreshCurrentMap()" onmouseover="UiToolkitAPI.ShowTextTooltip('StatsLbRefresh', 'Re-fetch this leaderboard from the server (ignores the cached copy)')" onmouseout="UiToolkitAPI.HideTextTooltip()" style="height: 30px; padding: 0 14px; margin-right: 8px; vertical-align: center; background-color: #232a33; border-radius: 6px;">
+						<Label text="Refresh" style="font-size: 13px; color: #cdd5df; vertical-align: center;" />
+					</Button>
 					<Button onactivate="StatsHandler.closeMapLeaderboard()" style="width: 30px; height: 30px; vertical-align: center; background-color: #232a33; border-radius: 6px;">
 						<Label text="✕" style="font-size: 15px; color: #cdd5df; horizontal-align: center; vertical-align: center;" />
 					</Button>

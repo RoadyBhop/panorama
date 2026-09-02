@@ -1,0 +1,41 @@
+@use '../config' as *;
+
+// Full-screen, transparent containers so the customizer can absolutely-position the timer.
+// (The <Frame> in hud.xml carries .segmenttimer-frame; the layout root carries .segmenttimer-root.)
+.segmenttimer-frame,
+.segmenttimer-root {
+	width: 100%;
+	height: 100%;
+}
+
+.segmenttimer {
+	flow-children: down;
+
+	// SEGMENT time. Green = spliced virtual run time. font-size / color are overridden per-preset by the
+	// customizer dynamicStyles.
+	&__segment {
+		font-family: $font-monospace;
+		font-size: 48px;
+		color: rgba(122, 238, 122, 1);
+		text-shadow: 0px 1px 1.5px 1 rgba(0, 0, 0, 0.9);
+		horizontal-align: left;
+	}
+
+	// Savestate slot indicator ("SS 2/3"), toggled by the showSlot customizer option.
+	&__slot {
+		font-family: $font-header;
+		font-size: 22px;
+		color: rgba(255, 255, 255, 0.75);
+		text-shadow: 0px 1px 1.5px 1 rgba(0, 0, 0, 0.9);
+		horizontal-align: left;
+	}
+
+	// Jump log: the segment time at each of the last few jumps (newest on the bottom).
+	&__log {
+		font-family: $font-monospace;
+		font-size: 18px;
+		color: rgba(255, 255, 255, 0.6);
+		text-shadow: 0px 1px 1.5px 1 rgba(0, 0, 0, 0.9);
+		horizontal-align: left;
+	}
+}

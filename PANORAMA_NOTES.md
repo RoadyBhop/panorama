@@ -178,13 +178,29 @@ range inside `callbackFunc`.
 size to content — a `height: 100%` root child then collapses to 0. Give the component root an explicit
 CSS height (like `.strafetrainer { height: 80px }`).
 
-**Adding a NEW HUD component without C++:** HUD elements are C++ panel types (`MomHud*`/`Hud*`) declared
-in `layout/hud/hud.xml`; the C++ type auto‑loads `layout/hud/<kebab>.xml`. You can't add a new C++ type.
-Trick: **repurpose an existing unused one** — we reused `MomHudStrafeSync` (was commented out as
-"broken") for Strafe Offsets. The user‑facing name comes from `registerHUDCustomizerComponent`, so the
-internal type name is invisible. **`MomHudStrafeSync` does NOT dispatch `HudProcessInput`** (that's why
-it was "broken") → don't rely on the `events` HudProcessInput; drive updates with a self‑scheduled
-`$.Schedule(0, ()=>this.loop())` loop guarded by `if (!panel?.IsValid()) return;`.
+**Adding a NEW HUD component — you do NOT need C++.** (Earlier notes claimed you had to repurpose an
+existing C++ panel — that's wrong; the whole customizer is pure Panorama/JS.) `registerHUDCustomizerComponent`
+takes ANY `GenericPanel`, and `customizer.ts` `Component.register` only gates on **`panel.id` existing as a
+key in `hud_default.kv3`** (`if (!defaultLayout[panel.id]) return null`). Positioning/sizing/enable are all
+done in JS via `LayoutUtil.setPosition/​setWidth/​setHeight` + `panel.enabled` — they work on any panel. Proof:
+the customizer registers its own plain `#CustomizerSettings` `<Panel>` as a component. So a brand‑new element
+just needs: a `<Panel id="Foo">` on the HUD, an id‑matched `Foo` block in `hud_default.kv3`, and a
+`registerHUDCustomizerComponent($('#Foo'), …)` call. The C++ `MomHud*`/`Hud*` types only exist to (a)
+auto‑load their `layout/hud/<kebab>.xml` and (b) fire gameplay‑specific events (e.g. `DFJumpDataUpdate`) —
+neither is required for a display element.
+- **Getting a scripted panel onto the HUD without a C++ type:** put a **`<Frame src="…/foo.xml" …>`** in
+  `hud.xml` (same mechanism as `console-notify`). The frame's own layout file has its own `<styles>`/
+  `<scripts>`. `$.GetContextPanel()` inside that file returns the **layout's inner root**, NOT the `<Frame>`
+  (verified: `news.ts` does `$.GetContextPanel().ToggleClass('news--minimized')` and the CSS is on the inner
+  `.news` panel, not `#NewsPanel`). The inner root must have **no id** (loader rule, §7), so give the
+  positioned element an **id on a CHILD** of the root and register THAT child; make the frame + inner root
+  full‑screen (`width/height:100%`) so the customizer's absolute offset lands in screen coords. See the
+  Segment Timer (§6g) for the full pattern.
+- **A plain panel does NOT receive `HudProcessInput`** (only some C++ HUD panels do). Drive per‑frame updates
+  with a self‑scheduled `$.Schedule(0, ()=>this.loop())` guarded by `if (!panel?.IsValid()) return;` — same as
+  the repurposed `MomHudStrafeSync` (Strafe Offsets, §6c), which was reused precisely because it also doesn't
+  fire `HudProcessInput`. Repurposing an unused C++ panel is still an option when you need its C++ events, but
+  it's no longer necessary just to add a component.
 
 ---
 
@@ -237,6 +253,13 @@ restyles the tier rows, via `refreshTierExpansion`).
   disjoint per‑(mode,style,filter) results (each map queried once). `rankGen` guards rescans. The old
   separate "Leaderboard ranks" section (WRs/Top 10 tiles) is gone — those counts live in the ladder's
   WR/T10 cells now; only **Avg rank** + **Avg %** remain, as small boxes under the ladder.
+  - **Scan yields HTTP to map play/download** (`rankPausedUntil` / `pauseRankScan` / `waitWhilePaused`): the
+    scan's flood (`pool` concurrency 10 × up to 20 retries, every mode) shares the game's HTTP client with
+    **map downloads**, so a tier‑row play/download button appeared dead until the whole scan finished. Now a
+    play click calls `pauseRankScan(6)` (and `pollDownload` refreshes it each tick while the map is queued), and
+    every `fetchJson` attempt first `await`s `waitWhilePaused()` — so in‑flight scan requests drain and no new
+    ones fire, freeing HTTP for the download; the scan resumes ~6s after the download ends. Pause starts at 0
+    (no delay to the initial scan).
 - **Group rankings ladder** — the headline of the left card's rank block, best→worst:
   **WR · T10 · G1 … G6** (+ implicit "No group"). Each completed *ranked* map lands in exactly ONE cell.
   **WR (rank 1)** and **Top 10 (ranks 2–10)** are pulled out ABOVE the numeric groups — since every G1
@@ -267,7 +290,9 @@ restyles the tier rows, via `refreshTierExpansion`).
   it must have **no id**, so the page and the popup are wrapped in a single **id‑less root `<Panel>`** with
   default (overlap) flow — the popup then covers the page. Rows = badge (WR/T10/G1..G6) · #rank · avatar ·
   player · time · **+WR diff** (vs rank‑1) · **vs You** (signed gap to the viewed user's own PB — `−` faster,
-  `+` slower; header reads "vs Them" for a searched user), unified via `fillLbRow`. The viewed user's time is
+  `+` slower; header reads "vs Them" for a searched user), unified via `fillLbRow`. **Popup times show 3
+  decimals** — `fmtTime`/`fmtDiff`/`fmtVsYou` take a `decimals` arg (default 2; `fillLbRow` passes 3); the
+  tier‑list rank cells keep the 2‑dp default. The viewed user's time is
   free from `perMapRank[key].time` when the scan has it, else one `userIDs=` call via `getYourTime` (cached in
   `yourTimeCache[key|uid]`, run in PARALLEL with the board fetch so it adds no latency). Data:
   `GET /v1/maps/{id}/leaderboard?…&take=10` — **the response embeds `user` (alias + `steamID` + avatarURL) by
@@ -305,6 +330,30 @@ restyles the tier rows, via `refreshTierExpansion`).
   count is LOCAL cache (no HTTP) and the rank scan only pulled `take=1`/your‑rank, so none of this is available
   without these on‑demand calls. `lbGen` guards stale/overlapping fetches; a `MainMenuPageHidden` handler
   collapses the popup on Esc/leave so it can't reappear over a fresh open. Cleared on rescan.
+  - **Per‑map Refresh button** (popup header, next to ✕): re‑fetches just the open board. `openMapLeaderboard`
+    takes a `force` flag → `delete mapLbCache[key]` (board re‑fetched) and `getYourStanding(…, force)` bypasses
+    BOTH the `perMapRank` and `yourStandingCache` reads for a fresh `userIDs=` call (perMapRank is NOT cleared,
+    so the tier row behind the popup keeps its value). The open map is remembered on the handler
+    (`lbMapID/lbGm/lbStyle/lbMapName`, set in `openMapLeaderboard`, nulled in `closeMapLeaderboard`) so
+    `refreshCurrentMap()` can re‑open it with `force=true`. Cutoffs re‑fetch automatically (fresh entry →
+    all `fetched:false`).
+  - **Popup click‑through fix:** the card `<Panel>` has **`hittest="true"` + `onactivate=""`** so clicks on its
+    own background/labels don't fall through to the full‑screen `#StatsLbBackdrop` button and close it (see §7).
+  - **Right‑click a run row → context menu** (`fillLbRow` sets `oncontextmenu` on each filled row →
+    `showRunContextMenu(row)`) via `UiToolkitAPI.ShowSimpleContextMenu`: **View map on Momentum** (opens
+    `<mom_api_url_frontend>/maps/<name>` in the Steam overlay) + **Show Steam Profile**
+    (`SteamOverlayAPI.OpenToProfileID`).
+    - ⛔ **Watching an online replay in‑game is NOT possible from this popup** (tested: does nothing in map or
+      lobby). Confirmed dead ends: `mom_tv_replay_watch` takes a **local file path only** (a CDN URL is a no‑op);
+      no exposed JS API downloads an arbitrary run's `.mrec` to disk; `MomentumReplayAPI` only controls an
+      already‑loaded replay. The base game watches online replays purely in C++ via
+      **`LeaderboardEntry_PlayReplay(itemIndex)`**, where `itemIndex` is the row's **position in a C++
+      `Leaderboards` panel's loaded times list — NOT the global rank** — and that panel must already hold this
+      exact map+gamemode+track+style (only ever the map selected in the base map selector, or the map you're
+      currently on). Our web‑API popup has no such panel for arbitrary maps, and the panel's exposed methods
+      (`selectTrack`/`applyFilters`/`getTimesListStatus`) can't load an arbitrary map or play a rank. So the menu
+      links out instead. `Top10Row.downloadURL` is still captured (from `e.downloadURL`) for a possible future
+      local‑download+`mom_tv_replay_watch` path, but is currently unused.
 - **Tier‑row tooltip flicker fix / persistent tier rows.** Clicking a tier used to rebuild the whole
   right card, recreating the hovered row — so its "Show tier X maps" hover tooltip flashed at the press
   point for one frame (the tooltip re‑anchored to the not‑yet‑laid‑out new panel) before snapping back.
@@ -387,6 +436,26 @@ in‑game (flip the `dYaw<0` mapping if reversed).
   its **`ImageFailedLoad`** handler reports "not found" (guarded by `pendingBackground`). webm can't be probed
   (no image‑load event), so it's applied directly. The light/dark + CSS toggles clear the override first so they
   still visibly change the background. `onEscapeKeyPressed` closes the selector before anything else.
+- **Background selector — remote image URLs + anime image search (nekos.best).** The override now also accepts a
+  **full `http(s)://` URL**: `setMainMenuBackground` routes it (via `isRemoteUrl`) to `showBackgroundImageUrl` →
+  `image.SetImage(url)` directly (SetImage takes a CDN url and is **NOT domain‑whitelist‑gated**, unlike
+  `$.AsyncWebRequest`). `applyBackgroundByName` also commits a pasted URL as‑is. The selector has an **anime
+  image search** section (added below the presets in `main-menu.xml`): a keyword `TextEntry` + Search button, the
+  `NEKO_CATEGORIES` quick‑picks (`neko/waifu/husbando/kitsune` — the 4 **PNG** categories; the ~58 GIF ones are
+  skipped since a static background wants a still image), a status line, and a scrollable thumbnail grid
+  (`#NekoResults`, `.bgselector__nekogrid`). **Why nekos.best** (`https://nekos.best/api/v2`, added to
+  `domain_whitelist.kv3`): among the no‑auth anime APIs it's the one that actually works in Panorama — **no API
+  key**, a real **`/search?query=&type=1&amount=`** keyword endpoint AND **`/{category}?amount=`** browse, and it
+  serves **PNG** (waifu.im/nekosapi serve **webp**, which the Image panel may not render; nekosia.cat is
+  Cloudflare‑gated; nekosapi defaults to explicit content). Response = `{ results: [{ url, artist_name, source_url,
+  dimensions }] }`; each result's `url` is a PNG on `nekos.best`. `nekoFetch` = promise‑wrapped `AsyncWebRequest`
+  + `parseLeadingJson` (same trailing‑NUL quirk as the Stats page). `nekoGen` discards stale responses; clicking a
+  thumbnail → `applyNekoImage` → `commitBackgroundOverride(url)`. Opening the selector auto‑loads the `neko`
+  category so the grid isn't empty. **CAVEATS:** (1) the whitelist is **startup‑only → full game restart** (not
+  `panorama_reload`) before the API call works — until then it shows "Search failed…". (2) nekos.best docs say a
+  User‑Agent header is "mandatory"; `AsyncWebRequest` can't set headers, so this relies on the **engine's default
+  UA** being accepted — verify in‑game. (3) if the whitelist host is missing, `AsyncWebRequest` **throws
+  synchronously**, but it's inside `nekoFetch`'s Promise executor so it rejects cleanly (no crash).
 - **CS:S menu:** in CSS mode `setMainMenuBackground` adds class `mainmenu--css` to the root; all show/
   hide is in CSS (`main-menu.scss`): hides `.topnav`/`.topnav__shadow` (but NOT in pause —
   `.mainmenu--css:not(.MainMenuRootPanel--PauseMenuMode)`), hides `.home__wrapper` (spinning
@@ -455,10 +524,157 @@ handler) it calls `RefreshList({})` (no‑op on the C++ 10s cooldown → keeps t
 - **Caveat:** in main‑menu CS:S mode the real drawer is hidden, so after joining there's no in‑CS:S lobby
   details/chat UI — toggle CSS off (or use the pause menu) to see the lobby. Joining still works.
 
+### 6g. Segment Timer (HUD) — `hud/segment-timer.{ts,xml,scss}` (class `SegmentTimerHandler`)
+**The proof that a HUD customizer element needs no C++** (see §4). A savestate‑practice stopwatch: the real
+run timer is disabled by `mom_savestate_create`/`_load` (practice mode), so this keeps an INDEPENDENT
+"virtual run time" that survives save/load.
+- **Not a C++ panel.** A `<Frame class="segmenttimer-frame" src="…/segment-timer.xml" hittest="false" …>` is
+  added to `hud.xml` among the general elements. `segment-timer.xml`'s root is an id‑less full‑screen
+  `.segmenttimer-root`; the positioned element is its **child `#SegmentTimer`** (id on the child, not the
+  topmost root — §7 loader rule). Both frame + root are `width/height:100%` so the customizer's absolute
+  offset = screen coords. Registered with `registerHUDCustomizerComponent($('#SegmentTimer'), …)`; dynamicStyles
+  = `fontSize` (NUMBER_ENTRY→fontSize px), `fontColor` (COLOR_PICKER→color + `getTextShadowFast`), `showSlot`
+  (CHECKBOX→`.segmenttimer__slot` visibility). Names are **plain strings** (no `$.Localize`) so no
+  localization/restart needed. `hud_default.kv3` `SegmentTimer` block: `enabled/offsetX 900/offsetY 480` +
+  those three dynamicStyles.
+- **One clock** — the SEGMENT time (`Stopwatch` helper: pausable, `value = base + (now − origin)` while
+  running, else `base`, off `MomentumMovementAPI.GetCurrentTime()`), updated each frame by a **self‑scheduled
+  `$.Schedule(0,…)` loop** (a plain panel gets no `HudProcessInput`), shown via
+  `SetDialogVariableFloat('segtime', …)` + label `{g:time:segtime}` (`.segmenttimer__segment`, green; the
+  customizer font controls target it). It's the **"spliced" virtual run time**: only accumulates real gameplay
+  progress — creating a savestate snapshots THIS value; loading rewinds to that snapshot, so failed retries are
+  discarded and good segments stitch together (= run pace). Unknown savestate → rewinds to 0. (An earlier
+  version had a second white "total" wall‑clock timer; removed — the layout/scss still support a second label
+  if wanted.)
+- **Sits at 0 in the start zone**: `OnObservedTimerStateChange` → `PRIMED` = in start zone → `resetPaused()`
+  (0, frozen); `RUNNING && majorNum===1 && minorNum===1` = run start → `resetRunning()` (0, counting). All
+  other states (mid‑run, FINISHED, **DISABLED/practice**) are left alone so the clock keeps running through
+  savestate practice. `LevelInitPostEntity` resets to 0/frozen.
+- **Per‑slot save/load** via `OnSaveStateUpdate(count, current, usingMenu)` (§7): `current` is 0‑indexed;
+  `usingMenu` true ONLY on teleport/load (incl console command), false on create/menu‑close. Storage =
+  **`Map<slotIndex, segmentTimeAtCreation>`** (NOT a splice array — that got corrupted by pre‑existing
+  savestates). Branch order matters: **count===prev+1 = create** → `creation.set(current, segment.value())`
+  (snapshots the GREEN value); **count>prev+1 = bulk sync** (savestates loaded from disk — adopt count, store
+  nothing); **count<prev = delete** → drop keys ≥ count; **count 0 = clear**; **count===prev && usingMenu =
+  load**.
+- **Freeze at a saveloc is driven by the LIVE player movetype in `update()`, NOT by the savestate events.**
+  A load‑type `OnSaveStateUpdate` (`count===prev && usingMenu`) — a `+mom_savestate_load` hold press, a menu
+  **switch**, or a load — only RECORDS the target slot's snapshot in `loadTarget` (`onSaveStateLoad`). Each
+  frame `update()` reads `MomentumMovementAPI.GetMoveType()`: on the transition **into `NONE`** (parked at a
+  saveloc) it parks the timer at `loadTarget` (`setValue`+`pause`, `segFrozen=true`, gated on `loadTarget` so
+  an unrelated spawn‑NONE can't freeze it); on the transition **out of `NONE`** it resumes (`segment.start()`).
+  - ⚠️ **Three dead ends before this** (all in git history): (1) a press/release **toggle** — but a hold
+    fires the event on both press AND release while **switching/map‑load teleports fire LONE events**, so the
+    parity flipped → stuck/inverted after a switch. (2) resume on **velocity** — while held the player's
+    velocity reads the **stored EXIT speed** (not 0), so it resumed instantly. (3) freeze/resume decided
+    **from the event's movetype** — a single hold fires TWO events with different movetype (`move=0`/NONE on
+    the frozen press, `move=2`/WALK on the release) in inconsistent order, so it worked only sometimes. Only
+    the **live** movetype, sampled every frame, reflects the true parked‑vs‑playing state. `MoveType.NONE=0`;
+    while parked velocity is stored‑but‑not‑applied (hence the non‑zero speedometer), so movetype — not
+    velocity — is the signal.
+  - A `#SegmentTimerSlot` label shows `SS current/count`. `const DEBUG` `$.Msg`‑logs each event + freeze /
+    resume (with `move=`) — leave on until confirmed in‑game.
+- **Spliced jump count** — a `splicedJumps` counter that mirrors the segment clock: ++ on each jump, reset to
+  0 on run start / start‑zone / level load, snapshotted on savestate create and **rewound on load** (so the
+  jump number splices with savestate practice just like the time). Driven by the **global unhandled
+  `OnJumpStarted` event** (same one the jump‑stats/strafe‑trainer HUDs use; register with
+  `$.RegisterForUnhandledEvent`, NOT tied to a C++ panel — replaces the earlier raw
+  `GetLastJumpStats().jumpCount`).
+- **Jump log** (`#SegmentTimerLog`) — the spliced jump count + segment time at each of the last
+  `JUMP_LOG_SIZE`(6) jumps, **newest on the bottom** (`push` + `shift` off the top), as `<splicedJumps>
+  M:SS.hh`. Rendered via `SetDialogVariable('jump_log', …\n‑joined)`. Cleared on run start / start‑zone /
+  level load.
+- **Persistence** (`$.persistentStorage`, JSON key/value, survives map loads AND restarts — no file I/O): the
+  `creation` map is saved per map, keyed `segment-timer.creation.<MapCacheAPI.GetMapName()>`, as
+  `[...creation.entries()]` — now `[slot, {time, jumps}][]` (`loadCreation` back‑compats the old bare‑number
+  format → `{time, jumps:0}`). `saveCreation()` runs whenever `creation` changes (create/delete/clear). The
+  game reloads a map's savestates from its own `.msav`, so on re‑entry the restored `creation` supplies each
+  slot's spliced time + jump count — pre‑existing savestates rewind to their real values instead of 0. (Only
+  the slot→snapshot map is persisted; the live clock/counter are ephemeral — back at 0 on re‑entry.)
+  - **Load timing was the bug** (first attempt didn't persist across reload): `MapCacheAPI.GetMapName()` can
+    be **empty at `LevelInitPostEntity`/ctor time**, so `loadCreation` keyed on `""` and loaded nothing. Fixed
+    with **`ensureLoaded()`** (loads only once the name is available, tracked by `loadedForMap`) called from
+    ctor, `reset()`, AND the top of `onSaveStateUpdate` (the map name is reliably ready by the time savestates
+    load — the safety net). **And** the disk‑load re‑announces existing savestates as `count===prev+1` (looks
+    like a create), which used to overwrite the restored value with the current (0) time — now guarded by
+    `if (!creation.has(current))` so only genuinely new slots snapshot.
+  - **The wipe** (found via the debug logs — `saveCreation … data=[[11,…]]` then after reload
+    `loadCreation … stored=[]`): a **`count=0` `OnSaveStateUpdate` fires on level SHUTDOWN** (and as a
+    transient at level init) — NOT just when the user clears all savestates, and all three are
+    indistinguishable. The `count===0` branch was doing `creation.clear()` + save, so the shutdown one saved
+    `[]` and wiped storage right as you left the map. **Fix: NEVER save on `count===0`.** It only clears the
+    in‑memory map when `saveStateCount > 0` (so a later recreate stores fresh; the init transient leaves the
+    freshly‑restored `creation` alone). Stale storage after a genuine clear‑all is harmless — overwritten by
+    the next create/delete save. (Creates `count===prev+1` and deletes `count<prev` still persist; the
+    bulk disk‑load `count>prev+1` and the `!creation.has(current)` guard on the single‑savestate reload keep
+    restored values intact.) `DEBUG` (currently **true**) `$.Msg`‑logs map name + saved/loaded data at every
+    step — set false once confirmed.
+- **Input — mind the `+`:** the game's own "Savestate Goto" bind is **`+mom_savestate_load`** (a `+/-` hold
+  command; see `settings/input.xml` `#Keybind_Savestate_Goto`), NOT the bare name — binding `mom_savestate_load`
+  may fire no teleport (→ "load does nothing"). Create is a normal command. Raw MOUSE4/MOUSE5 aren't readable
+  from JS (`MomentumInputAPI.GetButtons()` only reports bound `Button`‑enum actions), so we bridge through the
+  commands + event: `bind "mouse5" "mom_savestate_create"` / `bind "mouse4" "+mom_savestate_load"`.
+- **First run needs a full game restart** (new `hud_default.kv3` block is read at startup only; `panorama_reload`
+  won't pick it up). Enable it in the customizer if it defaulted off. To VERIFY: things to eyeball in‑game are
+  (a) the component appears/moves in the customizer, (b) the full‑screen‑frame offset lands where expected, and
+  (c) a created savestate maps to `current` on both the create and the later load event — read the DEBUG
+  `$.Msg` log; if create doesn't select the new slot, the `creation` map key is wrong.
+
+### 6h. Zone system reference (checkpoint / stage / end) — RESEARCH, not a built feature
+Notes from exploring why non‑start zones vanish once the run timer stops (savestate/practice), and how the
+zone editor works. Filed for a future "keep zones visible in practice" attempt.
+
+- **Data model** (`common/web/types/models`, used all over `pages/zoning/zoning.ts`):
+  `MapZones = { formatVersion, dataTimestamp, tracks: { main?: MainTrack, bonuses?: BonusTrack[] },
+  globalRegions?: { allowBhop?, cancel?, overbounce? }, maxVelocity? }`. A track's
+  `zones = { segments: Segment[], end: Zone }` (MainTrack also `stagesEndAtStageStarts`, `bhopEnabled`;
+  BonusTrack also `defragModifiers`). `Segment = { checkpoints: Zone[], cancel?: Zone[], name,
+  checkpointsRequired, checkpointsOrdered, limitStartGroundSpeed }`. `Zone = { regions: Region[], filtername,
+  filterNegated }`. `Region = { points[], bottom, height, safeHeight?, teleDestPos?, teleDestYaw?,
+  teleDestTargetname? }`.
+- **Terminology → data mapping** (this is the key decoder):
+  - **Start zone** = `segments[0].checkpoints[0]` (first segment, first checkpoint). `isStartZone()` checks this.
+  - **Stage** = a `Segment`; a **stage start / major checkpoint** = `segments[i>0].checkpoints[0]`.
+  - **Minor checkpoint** = `checkpoints[j>0]`. **End zone** = `track.zones.end`. **Cancel** = `segment.cancel[]`.
+  - Global regions: `allowBhop`, `cancel` (timer), `overbounce`. `RegionRenderMode` enum names the lot
+    (START, START_WITH_SAFE_HEIGHT, TRACK_SWITCH, END, MAJOR_CHECKPOINT, MINOR_CHECKPOINT, CANCEL, ALLOW_BHOP,
+    OVERBOUNCE).
+- **Editor** = `ZoneMenuHandler` (`pages/zoning/zoning.{ts,xml}`), a C++ `ZoneMenu` panel wrapped in a
+  `ConVarEnabler convar="mom_zoning_enable"` in `hud.xml`. Shown/hidden via the `ZoneMenu_Show` / `ZoneMenu_Hide`
+  unhandled events. C++ panel methods: `getEntityList()`, `getZoningLimits()`, `createRegion(isStart)`,
+  `editRegion(PickType)`, `moveToRegion(region)`, `previewTeleDest(region)`, `updateEditorRegions(renderRegions[])`,
+  `createDefaultTeleDest`. Data flow: `MomentumTimerAPI.GetActiveZoneDefs()` → mutate the JS `mapZoneData` →
+  `SetActiveZoneDefs(mapZoneData)` on hide → `SaveZoneDefs(mapZoneData)` writes the file; `LoadZoneDefs(useLocal)`
+  loads local vs online, `GetSavedZoneStatus()` → LOCAL/ONLINE bitflags. Events: `OnZoneDefsSet(newDefs)`,
+  `ActiveZoneDefsChanged`, `OnRegionEditCompleted/Canceled`. UI = 3 columns (tracks | segments+end |
+  checkpoints+cancel) + a per‑selection properties panel. `updateEditorRegions()` is what draws the coloured
+  region outlines **while the editor is open** (a different path from normal gameplay drawing).
+- **In‑world zone drawing is C++, driven by `cfg/config.cfg` convars** (base game, edited in place — NOT
+  overridden here): per‑type `mom_zonetype_{start,stage,checkpoint,end,bhop,cancel,overbounce}_draw_style` and
+  `_color`, plus global `mom_zone_face_alpha`, `mom_zone_outline_thickness`, `mom_zone_outline_subdivisions`,
+  `mom_zone_experimental_appearance`. Shipping values: start/stage/checkpoint/end `draw_style 1`;
+  bhop/cancel/overbounce `0`.
+- **Why start persists but stage/checkpoint/end vanish in practice:** not a Panorama thing — the non‑start
+  zones are drawn by C++ only while the run timer is active/approaching; a savestate disables the timer
+  (practice mode) and C++ stops drawing them, while the start zone stays (it's the prime/reset anchor).
+  **Can't be fixed from our Panorama override.** Things to try/know: (a) experiment with the `draw_style` values
+  in console (1 is current; try other values to see if any forces always‑draw) — unconfirmed, likely still
+  timer‑gated in C++; (b) **opening the zone editor draws every region regardless of timer state** (via
+  `updateEditorRegions`), so that's the one reliable in‑game way to see them during practice; (c) a proper fix
+  Panorama‑side would be our OWN overlay: we can read every region's `points`/`height` from
+  `GetActiveZoneDefs()` and draw them with a `UICanvas` (§5), but projecting world→screen ourselves is a big
+  feature. No JS API was found to force the native zone rendering on during practice.
+
 ---
 
 ## 7. Gotchas cheat‑sheet
 - XML comments can't contain `--` → whole layout fails to load.
+- **Click‑through close on a full‑screen backdrop.** The centred‑card‑over‑a‑backdrop‑`<Button>` popup pattern
+  (`.bgselector`, `#StatsLbPopup`) closes on clicks over the CARD's own background/labels unless the card
+  **catches hits itself** — a plain `<Panel>` / `<Image>` can be transparent to hit‑testing, so the click falls
+  through to the full‑screen close‑backdrop behind it. Fix: put **`hittest="true"`** (+ empty `onactivate=""`)
+  on the card panel; for dynamically‑created children that must be clickable (Images default `hittest=false`),
+  set **`panel.hittest = true`** in TS. Same trick the gallery uses (`MainImage hittest="true" onactivate=""`).
 - A layout `<root>` allows only ONE top‑level panel ("Found duplicate panel description" if two), and that
   topmost panel must have **no `id`** ("Top most panel should not have an ID. This ID is set in code" — the
   loader/`CreatePanel` names it). It CAN have `class`/`style`/`onload`. To overlay a popup over a whole page,
@@ -470,7 +686,9 @@ handler) it calls `RefreshList({})` (no‑op on the C++ 10s cooldown → keeps t
 - Every non‑NONE customizer style needs a `hud_default.kv3` default (override copy at
   `custom/panoDev/cfg/hud/`, needs restart).
 - `NumberEntry` clamps to `min` per keystroke → use `min:1`, clamp in callback.
-- Custom HUD components: `MomHudStrafeSync` doesn't fire `HudProcessInput` → self‑schedule updates.
+- **A new HUD customizer component needs NO C++** — any `<Panel>` with an id present in `hud_default.kv3`
+  works (customizer positions/sizes/enables it in JS). Add it via a `<Frame>` in `hud.xml`. See §4 / §6g.
+- Custom HUD components: plain panels (and `MomHudStrafeSync`) don't fire `HudProcessInput` → self‑schedule updates.
 - `MomHudStrafeSync` also **self‑hides** unless `mom_hud_strafesync_draw` is `1` (ships as 0) — C++ forces
   the panel invisible even while the JS loop runs/logs. Force the convar on in the ctor (see §6c).
 - `UICanvas` has no background → use a wrapper; `Clear` per frame; size via `actuallayout*/actualuiscale_*`.
@@ -491,11 +709,11 @@ handler) it calls `RefreshList({})` (no‑op on the C++ 10s cooldown → keeps t
 ## 8. Where things live
 ```
 panorama/
-  layout/hud/{strafe-trainer,strafe-sync,hud}.xml
+  layout/hud/{strafe-trainer,strafe-sync,segment-timer,hud}.xml   (segment-timer = pure-JS HUD element, §6g)
   layout/pages/{stats/stats,main-menu/main-menu}.xml
   layout/pages/map-selector/css-map-selector.xml        (CS:S map selector — §6e)
   layout/pages/lobby-list/css-lobby-list.xml            (CS:S lobby browser — §6f)
-  scripts/hud/{strafe-trainer,strafe-sync}.ts
+  scripts/hud/{strafe-trainer,strafe-sync,segment-timer}.ts
   scripts/pages/{stats/stats,main-menu/main-menu}.ts
   scripts/pages/map-selector/css-map-selector.ts        (CS:S map selector — §6e)
   scripts/pages/lobby-list/css-lobby-list.ts            (CS:S lobby browser — §6f)
@@ -506,7 +724,7 @@ panorama/
   scripts/common/web/enums/*        (Gamemode, Style, LeaderboardType, TrackType, MapStatus, …)
   scripts/types-mom/{apis,panels}.d.ts   (in-game API + panel types)
   scripts/types/shared/panels.d.ts       (UICanvas, base panel props)
-  styles/pages/main-menu.scss, styles/hud/{strafe-trainer,strafe-sync}.scss, styles/config.scss
+  styles/pages/main-menu.scss, styles/hud/{strafe-trainer,strafe-sync,segment-timer}.scss, styles/config.scss
   styles/pages/map-selector/css-map-selector.scss       (CS:S map selector — §6e; in _index.scss)
   styles/pages/lobby-list/css-lobby-list.scss           (CS:S lobby browser — §6f; own _index.scss)
   images/backgrounds/background01.dds, images/game-logos/css.png

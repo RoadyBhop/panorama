@@ -35,6 +35,15 @@ const KNOWN_BACKGROUNDS: string[] = [
 	'MomentumNeutral_4K.png'
 ];
 
+// nekos.best anime-image API — powers the background selector's image search. No auth (the engine's
+// default User-Agent satisfies it) and PNG images (which render as a background, unlike webp APIs). The
+// `/search?query=&type=1` endpoint does keyword search; the 4 PNG categories browse random images (the
+// ~58 GIF categories are skipped — a static background wants a still image). The JSON call needs
+// `nekos.best` in domain_whitelist.kv3; the image display via SetImage is not whitelist-gated. See §6d.
+const NEKOS_BEST_API = 'https://nekos.best/api/v2';
+const NEKO_CATEGORIES = ['neko', 'waifu', 'husbando', 'kitsune'];
+const NEKO_RESULT_COUNT = 15; // results per search / browse (API max is 20)
+
 @PanelHandler()
 class MainMenuHandler implements OnPanelLoad {
 	readonly panels = {
@@ -57,6 +66,9 @@ class MainMenuHandler implements OnPanelLoad {
 
 	// File name currently being validated on the hidden probe Image (background selector).
 	pendingBackground: string | null = null;
+
+	// Bumped on each nekos.best request so a slower earlier one that resolves late is discarded.
+	nekoGen = 0;
 
 	constructor() {
 		$.RegisterForUnhandledEvent('ShowMainMenu', () => this.onShowMainMenu());
@@ -333,11 +345,13 @@ class MainMenuHandler implements OnPanelLoad {
 		const cssMode = backgroundVar === BackgroundMode.CSS;
 		if (this.panels.cp?.IsValid()) this.panels.cp.SetHasClass('mainmenu--css', cssMode);
 
-		// 1) A user-chosen background override (a file name picked in the background selector) wins over the
-		//    themed default. `.webm` → video, any image extension → static image.
+		// 1) A user-chosen background override (picked in the background selector) wins over the themed
+		//    default. A full http(s) URL (e.g. a nekos.best image) is shown directly; a `.webm` name → video;
+		//    any other image name → static image from images/backgrounds.
 		const override = $.persistentStorage.getItem<string>(BG_OVERRIDE_KEY);
 		if (override) {
-			if (this.isVideoFile(override)) this.showBackgroundVideo(override);
+			if (this.isRemoteUrl(override)) this.showBackgroundImageUrl(override);
+			else if (this.isVideoFile(override)) this.showBackgroundVideo(override);
 			else this.showBackgroundImage(override);
 			return;
 		}
@@ -385,6 +399,21 @@ class MainMenuHandler implements OnPanelLoad {
 		this.panels.image.SetImage(`file://{images}/backgrounds/${file}`);
 	}
 
+	/** True if `s` is a remote http(s) URL (e.g. a nekos.best image) rather than a local file name. */
+	isRemoteUrl(s: string): boolean {
+		return /^https?:\/\//i.test(s);
+	}
+
+	/** Show a remote image `url` (e.g. a nekos.best search result) as the static background. SetImage takes
+	 *  a CDN url directly and, unlike $.AsyncWebRequest, is NOT domain-whitelist-gated. */
+	showBackgroundImageUrl(url: string) {
+		this.panels.movie.visible = false;
+		this.panels.movie.SetReadyForDisplay(false);
+		this.panels.image.visible = true;
+		this.panels.image.SetReadyForDisplay(true);
+		this.panels.image.SetImage(url);
+	}
+
 	// --- Background selector (name input + quick-picks) -------------------------------------------------
 	// Panorama can't enumerate a folder from JS, so the selector is a name input: type a file name (with
 	// extension) from videos/backgrounds or images/backgrounds. Image names are validated on the preview
@@ -399,10 +428,20 @@ class MainMenuHandler implements OnPanelLoad {
 		this.setBackgroundStatus('', false);
 		const current = $.persistentStorage.getItem<string>(BG_OVERRIDE_KEY) ?? '';
 		const input = $<TextEntry>('#BackgroundNameInput');
-		if (input) input.text = current;
+		if (input) input.text = this.isRemoteUrl(current) ? '' : current; // don't dump a long URL into the name box
 		// Preview the current image (the probe's PanelLoaded fires but pendingBackground is null → no-op).
 		const probe = $<Image>('#BackgroundProbe');
-		if (probe && current && !this.isVideoFile(current)) probe.SetImage(`file://{images}/backgrounds/${current}`);
+		if (probe && current) {
+			if (this.isRemoteUrl(current)) probe.SetImage(current);
+			else if (!this.isVideoFile(current)) probe.SetImage(`file://{images}/backgrounds/${current}`);
+		}
+
+		// Anime-image search: build the category quick-picks and load a first batch so the grid isn't empty.
+		this.populateNekoCategories();
+		this.setNekoStatus('', false);
+		const nekoInput = $<TextEntry>('#NekoSearchInput');
+		if (nekoInput) nekoInput.text = '';
+		this.browseNekoCategory('neko');
 	}
 
 	closeBackgroundSelector() {
@@ -436,6 +475,13 @@ class MainMenuHandler implements OnPanelLoad {
 		const name = (input?.text ?? '').trim();
 		if (!name) {
 			this.setBackgroundStatus('Enter a background file name.', true);
+			return;
+		}
+
+		// A pasted remote image URL (e.g. from the anime search, or any direct link) is applied as-is.
+		if (this.isRemoteUrl(name)) {
+			this.commitBackgroundOverride(name);
+			this.setBackgroundStatus('Applied image URL.', false);
 			return;
 		}
 
@@ -507,6 +553,141 @@ class MainMenuHandler implements OnPanelLoad {
 		status.text = msg;
 		status.SetHasClass('bgselector__status--error', isError && !!msg);
 		status.SetHasClass('bgselector__status--hidden', !msg);
+	}
+
+	// --- Anime image search (nekos.best) --------------------------------------------------------------
+	// No auth, PNG images. The keyword box hits `/search?query=&type=1`; the category quick-picks browse
+	// `/{category}`. Clicking a result stores its remote URL as the background override (shown via SetImage,
+	// which isn't domain-whitelist-gated). The JSON fetch DOES need `nekos.best` in domain_whitelist.kv3.
+
+	/** Build the category quick-pick buttons (once, when the selector opens). */
+	populateNekoCategories() {
+		const holder = $('#NekoCategories');
+		if (!holder) return;
+		holder.RemoveAndDeleteChildren();
+		for (const cat of NEKO_CATEGORIES) {
+			const btn = $.CreatePanel('Button', holder, `NekoCat_${cat}`, { class: 'bgselector__preset' });
+			btn.SetPanelEvent('onactivate', () => this.browseNekoCategory(cat));
+			$.CreatePanel('Label', btn, '', { class: 'bgselector__preset-text', text: cat });
+		}
+	}
+
+	/** Search box handler: keyword search, or (when empty) browse the default category. */
+	searchNeko() {
+		const input = $<TextEntry>('#NekoSearchInput');
+		const q = (input?.text ?? '').trim();
+		if (!q) {
+			this.browseNekoCategory('neko');
+			return;
+		}
+		void this.loadNeko(
+			`${NEKOS_BEST_API}/search?query=${encodeURIComponent(q)}&type=1&amount=${NEKO_RESULT_COUNT}`,
+			`No results for "${q}".`
+		);
+	}
+
+	/** Browse random images from a nekos.best category. */
+	browseNekoCategory(cat: string) {
+		const input = $<TextEntry>('#NekoSearchInput');
+		if (input) input.text = '';
+		void this.loadNeko(`${NEKOS_BEST_API}/${cat}?amount=${NEKO_RESULT_COUNT}`, `No images in ${cat}.`);
+	}
+
+	/** Fetch a nekos.best endpoint and render the results grid. `emptyMsg` shows when it returns nothing. */
+	async loadNeko(url: string, emptyMsg: string) {
+		const gen = ++this.nekoGen; // supersede a slower earlier request that resolves late
+		this.setNekoStatus('Searching…', false);
+		try {
+			const json = await this.nekoFetch(url);
+			if (gen !== this.nekoGen) return; // superseded by a newer search
+			const results: any[] = json?.results ?? [];
+			const urls = results
+				.map((r) => r?.url)
+				.filter((u): u is string => typeof u === 'string' && this.isRemoteUrl(u));
+			this.renderNekoResults(urls);
+			this.setNekoStatus(urls.length ? `${urls.length} results — click one to apply.` : emptyMsg, !urls.length);
+		} catch (e) {
+			if (gen !== this.nekoGen) return;
+			this.renderNekoResults([]);
+			this.setNekoStatus('Search failed — is nekos.best reachable and whitelisted?', true);
+			$.Msg(`[BgSelector] nekos.best request failed: ${String(e)}`);
+		}
+	}
+
+	/** Render clickable thumbnails; clicking one applies it as the background. */
+	renderNekoResults(urls: string[]) {
+		const grid = $('#NekoResults');
+		if (!grid) return;
+		grid.RemoveAndDeleteChildren();
+		for (const url of urls) {
+			const thumb = $.CreatePanel('Image', grid, '', {
+				class: 'bgselector__nekoresult',
+				scaling: 'stretch-to-cover-preserve-aspect'
+			});
+			thumb.hittest = true; // Images default to hittest=false; ensure the click applies (not swallowed by the window)
+			thumb.SetImage(url);
+			thumb.SetPanelEvent('onactivate', () => this.applyNekoImage(url));
+		}
+	}
+
+	/** Apply a chosen nekos.best image as the background (stored as a remote-URL override). */
+	applyNekoImage(url: string) {
+		this.commitBackgroundOverride(url);
+		this.setNekoStatus('Applied.', false);
+	}
+
+	setNekoStatus(msg: string, isError: boolean) {
+		const status = $<Label>('#NekoStatus');
+		if (!status) return;
+		status.text = msg;
+		status.SetHasClass('bgselector__status--error', isError && !!msg);
+		status.SetHasClass('bgselector__status--hidden', !msg);
+	}
+
+	/** Promise-wrapped GET + JSON parse for nekos.best. */
+	nekoFetch(url: string): Promise<any> {
+		return new Promise((resolve, reject) => {
+			$.AsyncWebRequest(url, {
+				type: 'GET',
+				complete: (d) => {
+					if (d.statusText !== 'success') {
+						reject(d.statusText);
+						return;
+					}
+					try {
+						resolve(this.parseLeadingJson(d.responseText));
+					} catch (e) {
+						reject(String(e));
+					}
+				}
+			});
+		});
+	}
+
+	/** Parse the leading top-level JSON value, ignoring trailing bytes — AsyncWebRequest appends a stray
+	 *  NUL terminator after the body that trips a plain JSON.parse (same quirk the Stats page handles). */
+	parseLeadingJson(txt: string): any {
+		let depth = 0;
+		let inStr = false;
+		let esc = false;
+		let end = -1;
+		for (let i = 0; i < txt.length; i++) {
+			const c = txt[i];
+			if (inStr) {
+				if (esc) esc = false;
+				else if (c === '\\') esc = true;
+				else if (c === '"') inStr = false;
+			} else if (c === '"') inStr = true;
+			else if (c === '{' || c === '[') depth++;
+			else if (c === '}' || c === ']') {
+				depth--;
+				if (depth === 0) {
+					end = i;
+					break;
+				}
+			}
+		}
+		return JSON.parse(end >= 0 ? txt.slice(0, end + 1) : txt);
 	}
 
 	/**

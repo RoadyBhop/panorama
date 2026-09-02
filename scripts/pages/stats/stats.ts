@@ -119,6 +119,11 @@ const GROUP_COLORS = ['#d8c26a', '#e0a86f', '#8fd694', '#7fb0e0', '#9aa3af', '#6
 let rankResults: Record<string, RankResult> = {};
 let rankBusy = false;
 let rankGen = 0; // bumped on rescan; a running scan aborts if it no longer matches
+// The background rank scan hammers the shared game HTTP client, which also serves map downloads — so while
+// a scan is running, clicking a map's play/download button couldn't get an HTTP slot until the scan drained.
+// A user action (launch/download a map) sets this timestamp; every rank-scan request holds off until then,
+// freeing the HTTP client so the map launches/downloads immediately. Refreshed for the duration of a download.
+let rankPausedUntil = 0; // ms epoch; while Date.now() < this, no new rank-scan web requests fire
 // The rank body panel for the selection currently shown, so a running scan can render into it if it
 // matches, and a background scan of other modes renders nowhere.
 let curRankBody: Panel | null = null;
@@ -149,6 +154,7 @@ interface Top10Row {
 	userID: number;
 	alias: string;
 	steamID: string | null; // steamID64 → AvatarImage (Steam client provides the avatar, no web call)
+	downloadURL: string | null; // the run's replay (.mrec) URL — captured for a future watch path (see showRunContextMenu; not usable in-game yet)
 }
 interface GroupCutoff {
 	group: number; // 1..6
@@ -217,6 +223,12 @@ class StatsHandler {
 	// Bumped on each top-10 popup open, so a slow in-flight fetch that resolves after the popup was closed
 	// (or a different map was opened) is discarded instead of filling the wrong board.
 	lbGen = 0;
+
+	// The map currently shown in the leaderboard popup, so its Refresh button can re-fetch just that board.
+	lbMapID: number | null = null;
+	lbGm: Gamemode = ALL_MODES;
+	lbStyle: Style = Style.NORMAL;
+	lbMapName = '';
 
 	constructor() {
 		// The page may be pre-created (hidden) before the map cache is ready, in which case its
@@ -1026,10 +1038,24 @@ class StatsHandler {
 		return new Promise((res) => $.Schedule(sec, () => res()));
 	}
 
+	/** Hold off the background scan's web requests so a user-initiated map launch/download gets HTTP priority
+	 *  (the scan and map downloads share the game's HTTP client). Extends any existing pause. */
+	pauseRankScan(seconds: number) {
+		rankPausedUntil = Math.max(rankPausedUntil, Date.now() + seconds * 1000);
+	}
+
+	/** Await until any active pause elapses (so no scan request competes with a user's map download). */
+	async waitWhilePaused() {
+		while (Date.now() < rankPausedUntil) {
+			await this.sleep(Math.min((rankPausedUntil - Date.now()) / 1000, 0.5));
+		}
+	}
+
 	/** GET + parse with retries and jittered backoff — the game/API throttles parallel bursts, so
 	 *  drops are common; jitter stops concurrent retries from re-bursting in lockstep. */
 	async fetchJson(url: string, tries = 20): Promise<any> {
 		for (let i = 0; i < tries; i++) {
+			await this.waitWhilePaused(); // yield HTTP to a user-initiated map launch/download
 			try {
 				return this.parseLeadingJson(await this.webGet(url));
 			} catch {
@@ -1098,7 +1124,8 @@ class StatsHandler {
 			time: e.time,
 			userID: e.userID,
 			alias: e.user?.alias ?? `Player ${e.userID}`,
-			steamID: e.user?.steamID ?? null
+			steamID: e.user?.steamID ?? null,
+			downloadURL: e.downloadURL ?? null
 		};
 	}
 
@@ -1137,14 +1164,20 @@ class StatsHandler {
 
 	/** The viewed user's own standing (rank + PB time) on a board. Free from the rank scan's cache when
 	 *  present; otherwise one `userIDs=` leaderboard call (cached per user). {null,null} = not on the board. */
-	async getYourStanding(mapID: number, gm: Gamemode, style: Style, key: string): Promise<Standing> {
-		const pm = perMapRank[key];
-		if (pm && pm.time != null) return { rank: pm.rank, time: pm.time };
+	async getYourStanding(mapID: number, gm: Gamemode, style: Style, key: string, force = false): Promise<Standing> {
+		// `force` (the popup's per-map Refresh) bypasses both caches so the standing is re-fetched fresh; the
+		// tier-list's perMapRank isn't cleared (kept for that row), just skipped here.
+		if (!force) {
+			const pm = perMapRank[key];
+			if (pm && pm.time != null) return { rank: pm.rank, time: pm.time };
+		}
 		const uid = this.viewUid();
 		if (!uid) return { rank: null, time: null };
 		const ck = `${key}|${uid}`;
-		const cached = yourStandingCache[ck];
-		if (cached !== undefined) return cached;
+		if (!force) {
+			const cached = yourStandingCache[ck];
+			if (cached !== undefined) return cached;
+		}
 		const res = await this.fetchRank(mapID, gm, style, uid);
 		if (!res.ok) return { rank: null, time: null }; // request failed — don't cache, let it retry
 		const standing: Standing = { rank: res.rank, time: res.time };
@@ -1167,10 +1200,16 @@ class StatsHandler {
 	/** Open the leaderboard popup for a map's (gm, style) board. Renders from the session cache when present
 	 *  (0 calls); otherwise one `take=10` call for the top 10, then one `take=1` call per group cutoff. The
 	 *  viewed user's own time (for "vs You") is resolved in parallel — free from the scan, or one extra call. */
-	async openMapLeaderboard(mapID: number, gm: Gamemode, style: Style, mapName: string) {
+	async openMapLeaderboard(mapID: number, gm: Gamemode, style: Style, mapName: string, force = false) {
 		const popup = $('#StatsLbPopup');
 		if (!popup) return;
 		const gen = ++this.lbGen;
+
+		// Remember which map is open so the popup's Refresh button can re-fetch just this board.
+		this.lbMapID = mapID;
+		this.lbGm = gm;
+		this.lbStyle = style;
+		this.lbMapName = mapName;
 
 		try {
 			popup.style.visibility = 'visible';
@@ -1188,14 +1227,15 @@ class StatsHandler {
 		lbCutoffRefs = [];
 
 		const key = this.perMapKey(mapID, gm, style);
+		if (force) delete mapLbCache[key]; // Refresh: drop the cached board so it re-fetches
 		let entry = mapLbCache[key];
 		let standing: Standing;
 		if (!entry) {
-			this.setLbStatus('Loading leaderboard…');
+			this.setLbStatus(force ? 'Refreshing leaderboard…' : 'Loading leaderboard…');
 			// Board top and your-own-standing run together, so "vs You" adds no wall-clock latency.
 			const [res, yt] = await Promise.all([
 				this.fetchBoardTop(mapID, gm, style),
-				this.getYourStanding(mapID, gm, style, key)
+				this.getYourStanding(mapID, gm, style, key, force)
 			]);
 			if (gen !== this.lbGen) return; // popup closed or another map opened while fetching
 			if (res == null) {
@@ -1291,8 +1331,48 @@ class StatsHandler {
 		}
 	}
 
+	/** Re-fetch just the currently-open map's leaderboard (bypasses the session cache for that one board). */
+	refreshCurrentMap() {
+		if (this.lbMapID == null) return;
+		void this.openMapLeaderboard(this.lbMapID, this.lbGm, this.lbStyle, this.lbMapName, true);
+	}
+
+	/** Right-click menu for a leaderboard run row. NOTE: watching an online replay in-game is NOT possible from
+	 *  here — the game only downloads+plays online replays through the C++ `Leaderboards` panel
+	 *  (`LeaderboardEntry_PlayReplay(index)`), which needs that panel already loaded with this exact
+	 *  map/track/style; our web-API popup has no such panel, and `mom_tv_replay_watch` only takes a LOCAL file
+	 *  path (no exposed API downloads an arbitrary run's .mrec). So we link out to the website + Steam profile. */
+	showRunContextMenu(row: Top10Row) {
+		const items: UiToolkitAPI.SimpleContextMenuItem[] = [];
+
+		// Open the map (its leaderboards + downloadable replays) on the Momentum website in the Steam overlay —
+		// the closest reachable "watch this run" from a custom panel.
+		const frontend = GameInterfaceAPI.GetSettingString('mom_api_url_frontend');
+		if (frontend && this.lbMapName) {
+			items.push({
+				label: 'View map on Momentum',
+				icon: 'file://{images}/movie-open-outline.svg',
+				style: 'icon-color-white',
+				jsCallback: () => SteamOverlayAPI.OpenURL(`${frontend}/maps/${this.lbMapName}`)
+			});
+		}
+
+		if (row.steamID) {
+			items.push({
+				label: $.Localize('#Action_ShowSteamProfile') || 'Show Steam Profile',
+				icon: 'file://{images}/social/steam.svg',
+				style: 'icon-color-steam-online',
+				jsCallback: () => SteamOverlayAPI.OpenToProfileID(row.steamID as steamID)
+			});
+		}
+
+		if (!items.length) return;
+		UiToolkitAPI.ShowSimpleContextMenu('', 'ControlsLibSimpleContextMenu', items);
+	}
+
 	closeMapLeaderboard() {
 		this.lbGen++; // discard any in-flight fetch
+		this.lbMapID = null; // no map open — Refresh is a no-op until the next open
 		const popup = $('#StatsLbPopup');
 		if (!popup) return;
 		try {
@@ -1312,8 +1392,8 @@ class StatsHandler {
 	}
 
 	/** Signed gap to the viewed user's own time: `−` = faster than you (ahead), `+` = slower (behind). */
-	fmtVsYou(delta: number): string {
-		return (delta < 0 ? '−' : '+') + this.fmtDiff(Math.abs(delta));
+	fmtVsYou(delta: number, decimals = 2): string {
+		return (delta < 0 ? '−' : '+') + this.fmtDiff(Math.abs(delta), decimals);
 	}
 
 	/** Build the popup body: the top 10, then a "group cutoffs" section (last person in each group, with the
@@ -1383,7 +1463,8 @@ class StatsHandler {
 						time: standing.time as number,
 						userID: id.userID,
 						alias: id.alias,
-						steamID: id.steamID
+						steamID: id.steamID,
+						downloadURL: null // standing fetch has no replay URL; Watch Replay is only on fetched board rows
 					};
 					this.fillLbRow(rp, g >= 1 ? `G${g}` : '—', g >= 1 ? GROUP_COLORS[g - 1] : '#6f7885', rank, youRow, wr, meId, '—', yourTime);
 				} else {
@@ -1416,6 +1497,10 @@ class StatsHandler {
 			rp.style.backgroundColor = mine ? '#1c2b30' : '#171b22'; // highlight the viewed player's row
 		} catch {}
 
+		// Right-click a filled row → context menu (Watch Replay / player profile), like the main-menu leaderboards.
+		if (row) rp.SetPanelEvent('oncontextmenu', () => this.showRunContextMenu(row));
+		else rp.ClearPanelEvent('oncontextmenu');
+
 		$.CreatePanel('Label', rp, '', {
 			text: badge,
 			style: `width: ${LB_W_BADGE}px; font-size: 12px; font-weight: bold; color: ${badgeColor}; text-align: center; vertical-align: center;`
@@ -1443,10 +1528,10 @@ class StatsHandler {
 			style: `width: fill-parent-flow(1); font-size: 14px; color: ${mine ? '#ffffff' : row ? '#dfe5ec' : '#6f7885'}; vertical-align: center; text-overflow: ellipsis;`
 		});
 		$.CreatePanel('Label', rp, '', {
-			text: row ? this.fmtTime(row.time) : ph,
+			text: row ? this.fmtTime(row.time, 3) : ph,
 			style: `width: ${LB_W_TIME}px; font-size: 14px; color: ${row ? '#b8c0cc' : '#6f7885'}; text-align: right; vertical-align: center;`
 		});
-		const wrDiff = row == null ? '' : rank === 1 || wr == null ? '—' : `+${this.fmtDiff(Math.max(0, row.time - wr))}`;
+		const wrDiff = row == null ? '' : rank === 1 || wr == null ? '—' : `+${this.fmtDiff(Math.max(0, row.time - wr), 3)}`;
 		$.CreatePanel('Label', rp, '', {
 			text: wrDiff,
 			style: `width: ${LB_W_DIFF}px; font-size: 13px; color: ${rank === 1 ? '#6f7885' : '#e0a86f'}; text-align: right; vertical-align: center;`
@@ -1461,7 +1546,7 @@ class StatsHandler {
 				youText = '—';
 			} else {
 				const delta = row.time - yourTime;
-				youText = this.fmtVsYou(delta);
+				youText = this.fmtVsYou(delta, 3);
 				youColor = delta < 0 ? '#e0736f' : delta > 0 ? '#8fd694' : '#8a93a0';
 			}
 		}
@@ -1980,6 +2065,7 @@ class StatsHandler {
 			// Same click handler for both states: handlePlayMap launches when the file exists,
 			// otherwise it starts the download (possibly via a confirm popup) — then we poll to flip.
 			play.SetPanelEvent('onactivate', () => {
+				this.pauseRankScan(6); // free the HTTP client so the launch/download starts at once, not after the scan
 				handlePlayMap(e.data, gm);
 				if (!e.data.mapFileExists) this.pollDownload(mapID, play, icon, e, gm);
 			});
@@ -2043,6 +2129,7 @@ class StatsHandler {
 			if (queued) {
 				sawQueued = true;
 				missed = 0;
+				this.pauseRankScan(6); // keep HTTP free for the whole download; scan resumes ~6s after it ends
 			} else {
 				missed++;
 			}
@@ -2166,21 +2253,21 @@ class StatsHandler {
 		}
 	}
 
-	/** Seconds → `m:ss.SS` (or `ss.SS` under a minute). */
-	fmtTime(t: number): string {
+	/** Seconds → `m:ss.SS` (or `ss.SS` under a minute). `decimals` fractional digits (popup passes 3). */
+	fmtTime(t: number, decimals = 2): string {
 		if (t == null || !isFinite(t)) return '—';
 		const m = Math.floor(t / 60);
 		const s = t - m * 60;
-		const ss = s.toFixed(2).padStart(5, '0');
+		const ss = s.toFixed(decimals).padStart(3 + decimals, '0'); // 2 int digits + '.' + decimals
 		return m > 0 ? `${m}:${ss}` : ss;
 	}
 
-	/** A positive time delta, compact (`s.SS`, or `m:ss.SS` past a minute). */
-	fmtDiff(t: number): string {
-		if (t < 60) return t.toFixed(2);
+	/** A positive time delta, compact (`s.SS`, or `m:ss.SS` past a minute). `decimals` digits (popup passes 3). */
+	fmtDiff(t: number, decimals = 2): string {
+		if (t < 60) return t.toFixed(decimals);
 		const m = Math.floor(t / 60);
 		const s = t - m * 60;
-		return `${m}:${s.toFixed(2).padStart(5, '0')}`;
+		return `${m}:${s.toFixed(decimals).padStart(3 + decimals, '0')}`;
 	}
 
 	//#endregion
