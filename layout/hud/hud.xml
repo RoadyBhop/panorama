@@ -29,6 +29,8 @@
 		<MomHudTimer id="Timer" />
 		<!-- Segment Timer: pure-Panorama HUD element (no C++ type), positioned by the JS customizer -->
 		<Frame class="segmenttimer-frame" src="file://{resources}/layout/hud/segment-timer.xml" hittest="false" hittestchildren="false" />
+		<!-- Zone Debug: research harness (2D zone minimap + collision/geometry probes). Toggle mom_zone_experimental_appearance. -->
+		<Frame class="zonedebug-frame" src="file://{resources}/layout/hud/zone-debug.xml" hittest="false" hittestchildren="false" />
         <HudComparisons id="Comparisons" />
         <MomHudSpeedometer id="Speedometer" />
         <MomHudKeypress id="KeyPress"/>

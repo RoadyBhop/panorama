@@ -15,6 +15,7 @@
 		<Panel id="SegmentTimer" class="segmenttimer">
 			<Label id="SegmentTimerSegment" class="segmenttimer__segment" text="{g:time:segtime}" />
 			<Label id="SegmentTimerSlot" class="segmenttimer__slot" text="{s:ss_label}" />
+			<Label id="SegmentTimerSplits" class="segmenttimer__splits" text="{s:splits}" />
 			<Label id="SegmentTimerLog" class="segmenttimer__log" text="{s:jump_log}" />
 		</Panel>
 	</Panel>

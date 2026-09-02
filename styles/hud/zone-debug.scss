@@ -1,0 +1,55 @@
+@use '../config' as *;
+
+// Full-screen, transparent containers (frame + layout root) so the minimap can corner-anchor itself.
+.zonedebug-root {
+	width: 100%;
+	height: 100%;
+}
+
+// The minimap card. Hidden until the mom_zone_experimental_appearance convar toggles zonedebug--open on it.
+.zonedebug {
+	visibility: collapse;
+	flow-children: down;
+	width: 320px;
+	horizontal-align: left;
+	vertical-align: bottom;
+	margin: 12px;
+	padding: 8px;
+	background-color: rgba(0, 0, 0, 0.55);
+	border: 1px solid rgba(255, 255, 255, 0.15);
+	border-radius: 4px;
+
+	&.zonedebug--open {
+		visibility: visible;
+	}
+
+	&__title {
+		font-family: $font-header;
+		font-size: 18px;
+		color: rgba(255, 255, 255, 0.85);
+		letter-spacing: 2px;
+		margin-bottom: 4px;
+	}
+
+	// UICanvas paints no background of its own (see PANORAMA_NOTES §5), so this wrapper carries one and
+	// gives the canvas a definite box to fill. Fixed height (not fill-parent-flow) so the card can size to
+	// content without needing the parent's overflow to be scroll/clip (the fill-parent-flow gotcha, §1).
+	&__canvaswrap {
+		width: 300px;
+		height: 300px;
+		background-color: rgba(255, 255, 255, 0.04);
+		border: 1px solid rgba(255, 255, 255, 0.08);
+	}
+
+	&__canvas {
+		width: 100%;
+		height: 100%;
+	}
+
+	&__status {
+		font-family: $font-monospace;
+		font-size: 13px;
+		color: rgba(255, 255, 255, 0.7);
+		margin-top: 4px;
+	}
+}

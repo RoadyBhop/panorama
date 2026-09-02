@@ -664,6 +664,140 @@ zone editor works. Filed for a future "keep zones visible in practice" attempt.
   Panorama‑side would be our OWN overlay: we can read every region's `points`/`height` from
   `GetActiveZoneDefs()` and draw them with a `UICanvas` (§5), but projecting world→screen ourselves is a big
   feature. No JS API was found to force the native zone rendering on during practice.
+- **FINDINGS (after building the §6j harness — the hard limits are now confirmed, not guesses):**
+  - **No DIRECT player world‑position API** (but see the `cl_showpos` workaround below — position IS obtainable).
+    Verified against BOTH the override and the base game's `types-mom/apis.d.ts` (identical): `MomentumPlayerAPI`
+    exposes only `GetVelocity`/`GetAngles`/`GetEnergy`/`GetStrafeSync`/`IsDucking`/… — no `GetPosition`/`GetOrigin`,
+    and no `WorldToScreen`. So there's no one‑call getter — **but** the Pos/Ang HUD (`cl_showpos`) surfaces the live
+    origin/angles indirectly, harvested by the player‑state bridge (§6l). With that, self‑computed point‑in‑polygon
+    collision DOES work (the harness ships the PIP + z‑range code and consumes the bridge as its position source).
+  - **In‑world 3D zone drawing stays C++‑only** and unreachable from a normal HUD context: `zoning.xml`'s root
+    IS the `<ZoneMenu>` C++ panel, and `updateEditorRegions()` is its method (gated by `mom_zoning_enable`). A
+    plain HUD `<Frame>` is a different JS context and can't call it. So the editor (`mom_zoning_enable 1`) is
+    still the one native way to see all regions during practice.
+  - **`ZonesAPI` is GONE — not just legacy.** In‑game `typeof ZonesAPI === 'undefined'` (touching it throws
+    `ReferenceError: ZonesAPI is not defined`). So there is **no live "current zone index" getter** at all. The
+    only per‑zone signal is the timer (next bullet). (speedometer.ts still names `ZonesAPI` but only inside a
+    commented‑out block, so it never runs.)
+  - **`GetObservedTimerStatus().majorNum` IS the game's live zone collision — but only during an ACTIVE run.**
+    Confirmed on surf_anzchamps: as you enter each stage's start zone the status steps `RUNNING major=1 → major=2 →
+    …` (minorNum tracks minor checkpoints); the End zone would be `major = segmentsCount + 1`. A savestate **CREATE
+    keeps the timer RUNNING**; a savestate **LOAD flips it to DISABLED (practice) and freezes majorNum at 1** — so in
+    practice this signal dies (matches §6h). The harness highlights the active stage on its minimap from this. ⇒ the
+    dream of auto‑splitting the Segment Timer at stage zones **during practice** is NOT achievable today (no practice
+    zone signal + no player position).
+  - **Console text is NOT readable from JS** (checked while hunting for a `getpos`→parse route to position): Panorama
+    gets only a payload‑free `NewConsoleMessages` ping (`() => void`); the C++ `NotifyConsoleMessageTarget` /
+    `StaticConsoleMessageTarget` panels render the text with no JS getter, and there's no `GetConsoleLog`/spew reader.
+    JS can only read/write **convar values** (`GetSettingString/Int/Float/Bool/Color`, `SetSetting*`,
+    `$.RegisterConVarChangeListener`) — and no convar holds live position — so the console route to position is dead.
+  - **★ SOLVED — player position IS reachable via the Pos/Ang HUD (`HudShowPos`) + `cl_showpos`.** `hud/show-pos.xml`
+    labels read `Pos: {s:origin}` / `Ang: {s:angle}`; the C++ panel writes the live origin/angles into those
+    **dialog variables every frame — but ONLY when `cl_showpos` is `1`** (ships at 0; it's a convar gate, exactly
+    like strafesync §6c). There's no `GetDialogVariable`, BUT a `Label`'s `.text` GETTER **returns the substituted
+    value** once the var is set. The earlier "dead end" was a false negative: with `cl_showpos 0` the var is unset
+    and `.text` reads back the bare token `"Pos: origin"`; with **`cl_showpos 1`** it reads the real coordinates —
+    in‑game: `[ShowPosProbe] labels=2 [0] "Pos: -14592.00 -14080.00 14957.40" [1] "Ang: 0.00 -90.00 0.00"`,
+    updating live as you move. Crucially `cl_showpos` updates **regardless of timer state**, so this works during
+    savestate practice too. ⇒ real point‑in‑polygon zone collision AND segment auto‑split during practice are now
+    possible. Built as the **player‑state bridge (§6l)**. Requirements: the Pos/Ang component must be **enabled in
+    the customizer** (labels only exist when it's shown — a disabled component logs `labels=0`) and `cl_showpos 1`
+    (forced by show‑pos.ts). To hide the on‑screen readout while keeping the data, set its **font color alpha to 0**
+    in the customizer (the labels still populate). (Value precision: origin to 2 dp, plenty for zones ≥256u tall.)
+  - **No JS API registers a real concommand.** `GameInterfaceAPI.ConsoleCommand` only RUNS commands. The harness's
+    "console command" is a `$.RegisterConVarChangeListener('mom_zone_experimental_appearance', …)` toggle (that
+    convar also flips the C++ experimental zone look — handy for the rendering experiment) plus always‑on `$.Msg`.
+    ⚠️ **Stale‑listener trap:** a `panorama_reload` builds a fresh handler + a NEW listener but does NOT remove the
+    old one, whose captured panel is now deleted → the old listener fires and throws **"Underlying object is
+    deleted!"**. Guard every panel touch in a convar/keybind callback with `IsValid()` and have the stale handler
+    `$.UnregisterConVarChangeListener(id)` itself (the per‑frame `$.Schedule` loop already self‑stops on `!IsValid()`).
+  - **Native `draw_style` has 5 modes** (`mom_zonetype_<type>_draw_style`, min 0 max 4): 0 off, 1 outlines
+    (default), 2 outlines as overlays (see through walls), 3 side faces, 4 side faces as overlays. **Still to
+    test:** set 2 or 4, then LOAD a savestate (enter DISABLED/practice) and check whether stage zones stay drawn —
+    if any mode ignores the timer gate, that's a zero‑code way to keep zones visible in practice.
+
+### 6j. Zone Debug harness (BUILT — `hud/zone-debug.{ts,xml,scss}`, class `ZoneDebugHandler`)
+A pure‑Panorama HUD `<Frame>` (same no‑C++ pattern as the Segment Timer §6g), added to `hud.xml` as
+`zone-debug.xml`. A research scratchpad for the §6h questions; **not a customizer component** (deliberately — no
+`hud_default.kv3` block, so `panorama_reload` picks up all edits, no restart). Toggle it with the console convar
+`mom_zone_experimental_appearance` (0 hide / 1 show + re‑dump); everything else auto‑logs to console with no setup.
+- **Reads zone geometry** from `MomentumTimerAPI.GetActiveZoneDefs()` and flattens it to `{region, kind, label}`
+  (kind = Start/Stage/Checkpoint/End/Cancel/AllowBhop/Overbounce, classified from the data shape the same way
+  `zoning.ts updateEditorRegions` does — first segment's first checkpoint = Start, other segments' CP0 = Stage,
+  CP>0 = minor Checkpoint; plus `end` and global regions). Enum/colours kept LOCAL — do NOT `import` from
+  `pages/zoning/zoning` (that would run the zoning page's `@PanelHandler` and double‑register it).
+- **2D TOP‑DOWN minimap** (`UICanvas`, corner card) — the feasible "render the zones" test. Auto‑fits all region
+  polygons to the canvas (world X/Y → screen, Y inverted so north is up), one coloured closed outline per region
+  (`DrawLinePoints`, count = #points, close by repeating point 0). It's our own panel ⇒ **stays visible during
+  savestate practice** regardless of the timer — which the native drawing does not. It's schematic, not a real
+  3D in‑world projection (no world→screen API). Canvas size via `actuallayout*/actualuiscale_*` (§5); bg on the
+  wrapper (UICanvas paints none). **The active stage is highlighted** (thick yellow outline) from the timer's
+  live `majorNum` while RUNNING/PRIMED — each main‑track region carries its `major` (segment index +1; End =
+  segmentsCount+1) so the highlight advances as you cross stages.
+- **C++ collision, surfaced live:** `update()` (self‑scheduled loop — a plain frame gets no `HudProcessInput`)
+  reads `GetObservedTimerStatus()` each frame and logs every `state/majorNum/minorNum` transition. **Confirmed
+  in‑game:** majorNum steps up as you enter each stage zone during an active run (the game's own zone collision),
+  and freezes at 1 once a savestate LOAD flips the timer to DISABLED (practice). `ZonesAPI` is confirmed absent
+  (`typeof … === 'undefined'`). The timer signal works only for live runs — but with the player‑state bridge (§6l)
+  now feeding real position, zone‑debug also does true point‑in‑polygon occupancy + a player dot, which works in
+  practice too.
+- **Self‑collision (probe‑gated):** `discoverPositionSource()` defensively calls a list of plausible getter names
+  (`GetPosition/GetOrigin/GetAbsOrigin/GetLastPos/…`) on `MomentumPlayerAPI`/`MomentumMovementAPI` in try/catch,
+  accepting any `[x,y,z]` (`asTriple`). If found, `pointInRegion` (ray‑cast PIP on XY + `bottom`/`height` z‑range;
+  `bottom>=COORD_MAX 65536` = "no vertical bound", the createRegion sentinel) reports the occupied zone each frame
+  and draws a player dot. **As of writing no source is found** (see §6h findings) so this path stays dark.
+- **Report** (`$.Msg`, once per map + on every zone‑defs change + on convar‑on): map name, region count, per‑region
+  pts/bottom/height/centroid, world XY bounds, the legacy `ZonesAPI` probe results, the position‑source verdict,
+  and the current timer status. This is the "try multiple options / debug msgs to see what works" surface.
+- **Pure‑console experiments to run alongside it** (no code — type in the dev console): sweep the native draw
+  styles to see if any value forces always‑draw in practice — `mom_zonetype_stage_draw_style 0..3`,
+  `..._checkpoint_...`, `..._end_...`, `..._start_...` (shipping: start/stage/checkpoint/end = 1, bhop/cancel/
+  overbounce = 0); `mom_zone_face_alpha`, `mom_zone_outline_thickness`, `mom_zone_experimental_appearance 0/1`;
+  and `mom_zoning_enable 1` (opens the editor = every region drawn regardless of timer, the known‑good baseline).
+  Config lives in the BASE `momentum/cfg/config.cfg` (edited in place, not overridden here).
+
+### 6k. Segment Timer zone splits (BUILT — `hud/segment-timer.{ts,xml,scss}`)
+"Show the spliced segment time each time you enter a stage / checkpoint / end zone" — and it works **during
+savestate practice**, which was the whole ask. Originally driven by the timer's `majorNum` (RUNNING‑only, so it
+died after a savestate load); now driven by **real player position** (the §6l bridge) + point‑in‑polygon, so it
+fires whenever you physically enter a zone regardless of timer state.
+- `checkZoneSplits()` runs every frame in the existing `update()` loop. `buildSplitZones()` flattens the MAIN
+  track's stage‑start / minor‑checkpoint / end zones into `splitZones` (the overall start zone is the reset anchor,
+  excluded; bonus tracks not split for now); rebuilt on level load + `OnZoneDefsSet`. Each frame it reads
+  `readPlayerState()` and, for every zone the player is newly inside (edge‑detected via `insideKeys`), captures
+  `segment.value()` into `splitTimes[key]`. Rendered into `#SegmentTimerSplits` sorted by zone order — `S2 0:12.34`
+  / `S2c1 …` / `End …` per line.
+- **Savestate‑load rewind handling (the neat part):** each frame it prunes any split whose captured time is
+  `> segment.value() + 0.05` — i.e. a split you've since rewound past (a load rewinds the spliced clock). So after
+  a load, splits "ahead" of the current spliced time auto‑clear and re‑capture on the next attempt, giving
+  current‑attempt splits with no savestate‑event bookkeeping. `resetSplits()` (clears `splitTimes`/`insideKeys`)
+  still runs on run start / prime / level load.
+- **REQUIRES the position feed:** the Pos/Ang HUD must be enabled in the customizer + `cl_showpos 1` (both handled
+  by §6l; hide the readout via font‑alpha 0). No feed ⇒ `readPlayerState()` null ⇒ no splits. Uses the shared
+  `common/zone-geometry.ts` `pointInRegion`. No `hud_default.kv3` change; `panorama_reload` picks it up.
+
+### 6l. Player‑state bridge (BUILT — `common/player-state.ts` + `hud/show-pos.ts`)
+**The way to get player world position into Panorama JS** (there is no position API — §6h). The C++ `HudShowPos`
+panel (the customizer "Pos/Ang" element, Panorama's `cl_showpos`) writes the live origin/angles into its labels'
+dialog variables each frame when `cl_showpos 1`, and a `Label`'s `.text` getter reads the substituted value back.
+- `common/player-state.ts` — a **side‑effect‑free** shared module (no `@PanelHandler`, safe to import from many
+  contexts): `publishPlayerState()` / `readPlayerState()` stash/fetch `{pos:[x,y,z], ang:[pitch,yaw,roll], time}`
+  on the **cross‑context global** `UiToolkitAPI.GetGlobalObject()` (the same shared object the HUD customizer uses
+  to expose its handler across contexts — a value written in one panel's JS context is visible in all others).
+  `parseShowPosVec()` pulls the 3 numbers out of a `"Pos: x y z"` label string.
+- `hud/show-pos.ts` — forces `cl_showpos 1` in the ctor, then a self‑scheduled loop reads the two
+  `.showpos-entry__label` texts (`FindChildrenWithClassTraverse`), parses them, and `publishPlayerState()`s each
+  frame. It's the **only JS context with access to those labels** (they live in the C++ panel's own layout), which
+  is why the reader lives here and hands off via the global rather than every consumer reading the labels directly.
+- Consumers: `zone-debug.ts` uses `readPlayerState().pos` for real point‑in‑polygon occupancy + a player dot on
+  the minimap; `segment-timer.ts` (§6k) uses it to capture stage/checkpoint/end splits **during practice** (cl_showpos
+  updates even when the timer is DISABLED — the thing majorNum couldn't do). Both share `common/zone-geometry.ts`
+  `pointInRegion`.
+- **Requirements / caveats:** the Pos/Ang component must be **enabled in the customizer** (labels don't exist when
+  it's disabled → `readPlayerState()` returns null) and `cl_showpos` must be `1` (forced here). Forcing the convar
+  shows the on‑screen readout — hide it by setting the component's **font color alpha to 0** (data still flows).
+  Position is the player **origin (feet)**, 2‑dp; fine against zone `bottom`/`height` ranges. `time` lets a
+  consumer detect a stale/paused feed.
 
 ### 6i. Stats page persistence & cheaper refresh (BUILT — `stats.ts`)
 `$.persistentStorage` (proven in §6g — JSON key/value, survives `panorama_reload` AND full restarts, no file
@@ -759,15 +893,24 @@ seconds). That's what's persisted.
   `MapEntry_MapLobbiesUpdated(playerCount)`, fired per‑map onto each C++ `MomHudMapEntry` panel (see
   `map-entry.ts`) — no `MapCacheAPI`/web getter. Custom lists can only approximate via current‑lobby
   members' `map_name` (only the lobby you're in is visible).
+- **No DIRECT player‑position API, but position IS obtainable via `cl_showpos`.** `MomentumPlayerAPI` gives
+  velocity/angles/energy, no position/origin. The workaround: force `cl_showpos 1` and read the C++ Pos/Ang HUD's
+  labels — a `Label`'s `.text` getter returns the substituted dialog‑variable value (the live origin/angles). See
+  the player‑state bridge §6l (and §6h). World→screen projection is still unavailable, so an in‑world 3D overlay
+  isn't feasible — a top‑down schematic minimap (§6j) is the most you can render yourself.
+- **No JS API to register a console command.** `GameInterfaceAPI.ConsoleCommand` only RUNS commands. For a
+  console‑driven trigger use `$.RegisterConVarChangeListener(existingConvar, cb)` (cb gets the value string;
+  the convar must already exist; don't use on server‑DLL convars per its own warning). `RegisterKeyBind` exists
+  but is unused/unverified anywhere in either codebase.
 
 ## 8. Where things live
 ```
 panorama/
-  layout/hud/{strafe-trainer,strafe-sync,segment-timer,hud}.xml   (segment-timer = pure-JS HUD element, §6g)
+  layout/hud/{strafe-trainer,strafe-sync,segment-timer,zone-debug,hud}.xml   (segment-timer + zone-debug = pure-JS HUD frames, §6g/§6j)
   layout/pages/{stats/stats,main-menu/main-menu}.xml
   layout/pages/map-selector/css-map-selector.xml        (CS:S map selector — §6e)
   layout/pages/lobby-list/css-lobby-list.xml            (CS:S lobby browser — §6f)
-  scripts/hud/{strafe-trainer,strafe-sync,segment-timer}.ts
+  scripts/hud/{strafe-trainer,strafe-sync,segment-timer,zone-debug}.ts   (zone-debug = zone render/collision research harness, §6j)
   scripts/pages/{stats/stats,main-menu/main-menu}.ts
   scripts/pages/map-selector/css-map-selector.ts        (CS:S map selector — §6e)
   scripts/pages/lobby-list/css-lobby-list.ts            (CS:S lobby browser — §6f)
@@ -775,10 +918,13 @@ panorama/
   scripts/common/online.ts             (Lobby/LobbyType/LobbyProperties types used by §6f)
   scripts/util/event-definition.ts        (MainMenu_ClosePage cross-context event — §7)
   scripts/common/{hud-customizer,buttons,leaderboard,maps}.ts
+  scripts/common/player-state.ts       (player position/angle bridge via cl_showpos — §6l; consumed by zone-debug + segment-timer)
+  scripts/common/zone-geometry.ts      (shared pointInRegion / COORD_MAX — §6j/§6k)
+  scripts/hud/show-pos.ts              (forces cl_showpos 1 + publishes player pos to the global — §6l)
   scripts/common/web/enums/*        (Gamemode, Style, LeaderboardType, TrackType, MapStatus, …)
   scripts/types-mom/{apis,panels}.d.ts   (in-game API + panel types)
   scripts/types/shared/panels.d.ts       (UICanvas, base panel props)
-  styles/pages/main-menu.scss, styles/hud/{strafe-trainer,strafe-sync,segment-timer}.scss, styles/config.scss
+  styles/pages/main-menu.scss, styles/hud/{strafe-trainer,strafe-sync,segment-timer,zone-debug}.scss, styles/config.scss
   styles/pages/map-selector/css-map-selector.scss       (CS:S map selector — §6e; in _index.scss)
   styles/pages/lobby-list/css-lobby-list.scss           (CS:S lobby browser — §6f; own _index.scss)
   images/backgrounds/background01.dds, images/game-logos/css.png

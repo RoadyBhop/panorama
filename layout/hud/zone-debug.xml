@@ -1,0 +1,25 @@
+<root>
+	<styles>
+		<include src="file://{resources}/styles/main.scss" />
+	</styles>
+
+	<scripts>
+		<include type="module" src="file://{scripts}/hud/zone-debug.ts" />
+	</scripts>
+
+	<!--
+		Topmost panel has NO id (loader rule) and fills the frame. #ZoneDebug is hidden by default
+		(styles/hud/zone-debug.scss sets visibility collapse); the open-state modifier class, toggled by the
+		mom_zone_experimental_appearance convar listener, reveals the minimap.
+		NOTE: never write the literal modifier class here; a double hyphen inside an XML comment breaks the layout.
+	-->
+	<Panel class="zonedebug-root" hittest="false" hittestchildren="false">
+		<Panel id="ZoneDebug" class="zonedebug">
+			<Label class="zonedebug__title" text="{s:zd_title}" />
+			<Panel class="zonedebug__canvaswrap">
+				<UICanvas id="ZoneDebugCanvas" class="zonedebug__canvas" />
+			</Panel>
+			<Label class="zonedebug__status" text="{s:zd_status}" />
+		</Panel>
+	</Panel>
+</root>

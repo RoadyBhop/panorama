@@ -30,6 +30,15 @@
 		horizontal-align: left;
 	}
 
+	// Zone splits: the spliced segment time captured the first time each stage / checkpoint was entered.
+	&__splits {
+		font-family: $font-monospace;
+		font-size: 18px;
+		color: rgba(180, 210, 255, 0.85);
+		text-shadow: 0px 1px 1.5px 1 rgba(0, 0, 0, 0.9);
+		horizontal-align: left;
+	}
+
 	// Jump log: the segment time at each of the last few jumps (newest on the bottom).
 	&__log {
 		font-family: $font-monospace;

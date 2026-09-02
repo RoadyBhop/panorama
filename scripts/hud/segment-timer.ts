@@ -1,6 +1,9 @@
 import { PanelHandler } from 'util/module-helpers';
 import * as Timer from 'common/timer';
 import { CustomizerPropertyType, registerHUDCustomizerComponent, getTextShadowFast } from 'common/hud-customizer';
+import type { MapZones, Region } from 'common/web/types/models/models';
+import { readPlayerState } from 'common/player-state';
+import { pointInRegion } from 'common/zone-geometry';
 
 /**
  * Segment Timer
@@ -42,6 +45,18 @@ const JUMP_LOG_SIZE = 6;
 // applied, which is why the speedometer shows the exit speed). Any other movetype means they're playing
 // again, so that's what un-freezes the timer. MoveType.NONE = 0 (MomentumMovementAPI.MoveType).
 const MOVETYPE_NONE = 0;
+
+// A split whose captured time is more than this many seconds AHEAD of the current spliced clock is stale (you
+// rewound past it via a savestate load) and gets dropped, so re-crossing that zone re-captures the new attempt.
+const SPLIT_PRUNE_EPS = 0.05;
+
+/** One splittable zone (main track): a stage start, minor checkpoint, or the end zone. */
+interface SplitZone {
+	key: string; // stable identity, e.g. "1:0" (segment:checkpoint) or "end"
+	label: string; // "S2", "S2c1", "End"
+	order: number; // sort order for display
+	region: Region;
+}
 
 /** Format seconds as M:SS.hh for the jump log lines. */
 function formatSegTime(secs: number): string {
@@ -104,7 +119,8 @@ class SegmentTimerHandler {
 		root: $<Panel>('#SegmentTimer')!,
 		segment: $<Label>('#SegmentTimerSegment')!,
 		slot: $<Label>('#SegmentTimerSlot')!,
-		log: $<Label>('#SegmentTimerLog')!
+		log: $<Label>('#SegmentTimerLog')!,
+		splits: $<Label>('#SegmentTimerSplits')!
 	};
 
 	private readonly segment = new Stopwatch(() => this.now()); // spliced virtual run time
@@ -122,6 +138,13 @@ class SegmentTimerHandler {
 	// Recent jumps: the spliced jump count + segment time captured at each of the last JUMP_LOG_SIZE jumps.
 	private jumpLog: { count: number; time: number }[] = [];
 
+	// Per-zone splits: the spliced segment time captured when the player enters each stage / minor checkpoint /
+	// end zone. Driven by the player-state bridge (real position via cl_showpos) + point-in-polygon, NOT the
+	// timer's majorNum - so it works during savestate practice (DISABLED), which is the whole point. See §6l/§6k.
+	private splitZones: SplitZone[] = []; // main-track split zones for the current map (geometry)
+	private splitTimes = new Map<string, number>(); // zone key -> spliced time captured on entry
+	private insideKeys = new Set<string>(); // zones the player was inside last frame (entry edge-detection)
+
 	constructor() {
 		this.segment.resetPaused();
 		this.ensureLoaded(); // restores this map's saved slots if the map name is already available
@@ -136,6 +159,9 @@ class SegmentTimerHandler {
 		$.RegisterForUnhandledEvent('OnSaveStateUpdate', (count, current, usingMenu) =>
 			this.onSaveStateUpdate(count, current, usingMenu)
 		);
+
+		// Zone geometry can change (editor save / reload); force a rebuild next frame it's needed.
+		$.RegisterForUnhandledEvent('OnZoneDefsSet', () => (this.splitZones = []));
 
 		registerHUDCustomizerComponent(this.panels.root, {
 			name: 'Segment Timer',
@@ -170,6 +196,7 @@ class SegmentTimerHandler {
 
 		this.updateSlotLabel(0, 0);
 		this.updateLog();
+		this.updateSplits();
 		this.update();
 	}
 
@@ -186,12 +213,14 @@ class SegmentTimerHandler {
 			this.segment.resetPaused();
 			this.splicedJumps = 0;
 			this.clearLog();
+			this.resetSplits();
 		} else if (state === Timer.TimerState.RUNNING && majorNum === 1 && minorNum === 1) {
 			// Run just started (left the start zone): begin from 0.
 			this.segFrozen = false;
 			this.segment.resetRunning();
 			this.splicedJumps = 0;
 			this.clearLog();
+			this.resetSplits();
 		}
 		// Other states (RUNNING mid-run, FINISHED, DISABLED/practice) are left alone so the timer keeps
 		// running through savestate practice.
@@ -213,6 +242,8 @@ class SegmentTimerHandler {
 		this.splicedJumps = 0;
 		this.updateSlotLabel(0, 0);
 		this.clearLog();
+		this.splitZones = []; // new map: rebuild split-zone geometry lazily
+		this.resetSplits();
 	}
 
 	private storageKeyFor(mapName: string): string {
@@ -272,6 +303,96 @@ class SegmentTimerHandler {
 			'jump_log',
 			this.jumpLog.map((e) => `${e.count}  ${formatSegTime(e.time)}`).join('\n')
 		);
+	}
+
+	/**
+	 * Zone splits, driven by real player position (the player-state bridge, §6l) + point-in-polygon rather than
+	 * the timer's majorNum - so they capture during savestate practice (DISABLED), when majorNum is frozen.
+	 * Called every frame from update(). Each frame: prune splits the spliced clock has rewound past (a savestate
+	 * load), then snapshot the spliced time the first time the player enters each stage/checkpoint/end zone.
+	 */
+	private checkZoneSplits(): void {
+		if (this.splitZones.length === 0) this.buildSplitZones();
+		if (this.splitZones.length === 0) return;
+
+		const state = readPlayerState();
+		if (!state) return; // no position feed (Pos/Ang HUD not enabled / cl_showpos off)
+
+		const now = this.segment.value();
+		let changed = false;
+
+		// Drop splits now AHEAD of the spliced clock: a savestate load rewound the timer past them, so re-crossing
+		// re-captures the current attempt. (On a clean forward run this never fires - splits are always <= now.)
+		for (const [key, t] of [...this.splitTimes]) {
+			if (t > now + SPLIT_PRUNE_EPS) {
+				this.splitTimes.delete(key);
+				changed = true;
+			}
+		}
+
+		// Entry edge-detection: capture the spliced time the first time (since reset/prune) each zone is entered.
+		const nowInside = new Set<string>();
+		for (const z of this.splitZones) {
+			if (!pointInRegion(state.pos, z.region)) continue;
+			nowInside.add(z.key);
+			if (!this.insideKeys.has(z.key) && !this.splitTimes.has(z.key)) {
+				this.splitTimes.set(z.key, now);
+				changed = true;
+				if (DEBUG) $.Msg(`[SegmentTimer] zone split ${z.label} @ ${formatSegTime(now)}`);
+			}
+		}
+		this.insideKeys = nowInside;
+
+		if (changed) this.updateSplits();
+	}
+
+	/** Flatten the MAIN track's stage-start / minor-checkpoint / end zones into the splittable list (the true
+	 * start zone is the reset anchor, not a split, so it's excluded). Bonus tracks are not split for now. */
+	private buildSplitZones(): void {
+		this.splitZones = [];
+		let zones: MapZones | null = null;
+		try {
+			zones = MomentumTimerAPI.GetActiveZoneDefs() ?? null;
+		} catch {
+			return;
+		}
+		const main = zones?.tracks?.main;
+		if (!main?.zones) return;
+
+		const segments = main.zones.segments ?? [];
+		for (let si = 0; si < segments.length; si++) {
+			const checkpoints = segments[si].checkpoints ?? [];
+			for (let ci = 0; ci < checkpoints.length; ci++) {
+				if (si === 0 && ci === 0) continue; // overall start zone = reset anchor, not a split
+				const label = ci === 0 ? `S${si + 1}` : `S${si + 1}c${ci}`;
+				const order = si * 1000 + ci;
+				for (const region of checkpoints[ci].regions ?? []) {
+					this.splitZones.push({ key: `${si}:${ci}`, label, order, region });
+				}
+			}
+		}
+		for (const region of main.zones.end?.regions ?? []) {
+			this.splitZones.push({ key: 'end', label: 'End', order: Number.MAX_SAFE_INTEGER, region });
+		}
+	}
+
+	private resetSplits(): void {
+		this.splitTimes.clear();
+		this.insideKeys.clear();
+		this.updateSplits();
+	}
+
+	private updateSplits(): void {
+		// One line per captured zone, in natural zone order (dedupe keys - a zone can have several regions).
+		const seen = new Set<string>();
+		const lines: { order: number; text: string }[] = [];
+		for (const z of this.splitZones) {
+			if (seen.has(z.key) || !this.splitTimes.has(z.key)) continue;
+			seen.add(z.key);
+			lines.push({ order: z.order, text: `${z.label}  ${formatSegTime(this.splitTimes.get(z.key)!)}` });
+		}
+		lines.sort((a, b) => a.order - b.order);
+		this.panels.root.SetDialogVariable('splits', lines.map((l) => l.text).join('\n'));
 	}
 
 	private onSaveStateUpdate(count: number, current: number, usingMenu: boolean): void {
@@ -365,6 +486,8 @@ class SegmentTimerHandler {
 			this.segFrozen = false;
 			if (DEBUG) $.Msg(`[SegmentTimer] resume (move=${MomentumMovementAPI.GetMoveType()})`);
 		}
+
+		this.checkZoneSplits();
 
 		this.panels.root.SetDialogVariableFloat('segtime', this.segment.value());
 		$.Schedule(0, () => this.update());
