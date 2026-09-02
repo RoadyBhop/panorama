@@ -665,6 +665,60 @@ zone editor works. Filed for a future "keep zones visible in practice" attempt.
   `GetActiveZoneDefs()` and draw them with a `UICanvas` (§5), but projecting world→screen ourselves is a big
   feature. No JS API was found to force the native zone rendering on during practice.
 
+### 6i. Stats page persistence & cheaper refresh (BUILT — `stats.ts`)
+`$.persistentStorage` (proven in §6g — JSON key/value, survives `panorama_reload` AND full restarts, no file
+I/O) makes the Stats page (§6a) load its rank data instantly and refresh cheaply. **The expensive part isn't
+the local map‑cache scan** (`MapCacheAPI`, no HTTP, fast) — it's the **web rank scan**
+(`rankQueue`/`processRankQueue`, 1–2 API requests per completed map across every gamemode, throttled, many
+seconds). That's what's persisted.
+
+- **What's persisted = `perMapRank` ONLY, keyed by the VIEWED user's id.** `stats.cache.<userId>` →
+  `{ v: STATS_CACHE_VERSION, ts, ranks: perMapRank }` (`ranks` = `{ mapID|gm|style → {rank,time,total,wrTime} }`,
+  a few numbers per completed map). `saveRankCache()` / `loadRankCache(uid)` / `statsCacheKey(uid)`; version‑gated
+  so a shape change invalidates old caches. Self id from `viewUid()` (local `MomentumAPI.GetLocalUserData().id`,
+  or the searched user). Each viewed player keys its own entry, so "Me" and searched users never clobber each
+  other. **Do NOT persist the `MMap` static data** (local via `MapCacheAPI`) **nor completion** (tier bars are
+  recomputed from the fast local scan / `remoteDone`).
+- **`rankResults` (the per‑`mode|style|filter` ladder/avg aggregates) are NOT persisted — they're re‑derived
+  from `perMapRank`** so it's the single source of truth. `recomputeRankResult(mode,style,filter)` mirrors the
+  live scan's accumulation EXACTLY (`gatherTargetsFor` → per completed map: absent from `perMapRank` = an
+  `error`, `rank==null` = `noEntry`, `rank!=null` = ranked; a ranked map still missing its `total` leaves the
+  result `pctPending` so `enqueueRank` re‑scans it). `recomputeTrackedRankResults()` rebuilds the set
+  `enqueueAllModes` scans (every mode's default style + the current selection's style). Because those results
+  end up present‑and‑not‑pending, **`enqueueAllModes` no‑ops every cached‑complete key** (its `enqueueRank`
+  guard `if (r && !r.pctPending) return`), so a cached open fires zero rank web requests.
+- **Load flow** (`loadCacheForView()` in `buildAll` + `applyUserChange`): resets `perMapRank`/`rankResults`/
+  `dataTimestamp`, loads the viewed user's cache, `recomputeTrackedRankResults()`, returns `hadCache`.
+  `hadCache` → render instantly + `startIncrementalRefresh()`; else it's a first‑ever **full scan**. **Rescan**
+  sets `forceFullScan` so `buildAll` SKIPS the (now‑stale) cache and does the full accurate scan.
+- **Full‑scan persistence** (`onScanQueueDrained`): when the rank queue empties AND `scanIsFull` (set true on a
+  first‑ever open or a forced Rescan), stamp `dataTimestamp = now`, `saveRankCache()`, re‑render. A cached
+  open's queue also drains here but with `scanIsFull=false` it's a no‑op (nothing scanned or persisted). Persist
+  is **once, at drain** (not per‑mode) — an interrupted first scan just re‑scans next open. A non‑default‑STYLE
+  scan on a cached open isn't persisted either (rare; recomputes/rescans on demand).
+- **Popup → main cache** (`writeBackFromBoard`, called from `openMapLeaderboard`): the Top‑10 popup already
+  fetches the board (rank‑1 WR time + `total`) + the viewed user's standing (rank + time), so it folds that
+  straight into `perMapRank[mapID|gm|style]` (same key) + re‑derives that map's two aggregates + persists —
+  **opening a map's popup / hitting Refresh updates the stats cache for that map for free**. Guards: only when
+  `standing.time != null` (a null could be a transient request failure, not "unranked" — don't clobber good
+  data), and diff‑checked so a cached re‑open doesn't re‑persist. Keeps the existing `dataTimestamp`.
+- **Incremental PB refresh** (`startIncrementalRefresh`, auto on every cached open): re‑queries ONLY the maps
+  whose rank data is stale — `gatherIncrementalTargets()` (completed maps across all modes' default style + the
+  current selection) filtered to **changed** = absent from `perMapRank` (new completion / prior error), OR was
+  `rank==null` (recheck — board may have re‑versioned), OR PB time moved by > `PB_EPS` (0.05s). For each, one
+  `fetchRank` (+ `fetchTotal` if ranked) → patch `perMapRank`, `updateTierRankRow`; then recompute + re‑render +
+  persist. **Current PB time**: local from the local map cache (`currentPbTime`, Pro/TP→run‑style‑0 remap like
+  `isDone`); remote from `remotePbTimes` (captured in `fetchUserDone` while fetching the searched user's runs —
+  main‑track only, keyed like `perMapRank`). *(Deviation from the original design: rather than "re‑fetch PBs
+  newest‑first and stop at the first cached run", the local path reads PB times straight from the local cache —
+  zero HTTP to find changes — and only the CHANGED maps cost a request; remote reuses the PB list we fetch on
+  search anyway. And `rankResults` is derived, not stored.)*
+- **⚠️ Caveat of incremental refresh:** it catches YOUR new/improved times, but NOT **other people** beating you
+  on a map where your PB didn't move (that board isn't re‑queried, so your rank drifts stale). So: incremental =
+  cheap auto‑load ("did my new runs land"); **full Rescan = the truth**. The left card's rank section shows
+  **"Updated Xm ago · Rescan for a full refresh"** (`agoText(dataTimestamp)`); `dataTimestamp` is bumped ONLY by
+  a full scan (never by incremental or popup write‑back), so the staleness reading is honest.
+
 ---
 
 ## 7. Gotchas cheat‑sheet

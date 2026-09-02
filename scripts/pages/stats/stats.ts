@@ -141,6 +141,40 @@ interface PerMapRank {
 }
 let perMapRank: Record<string, PerMapRank> = {};
 
+// --- Persistent rank cache (see PANORAMA_NOTES §6i) -------------------------------------------------
+// The expensive part of the page isn't the local map-cache scan (no HTTP, fast) — it's the web rank
+// scan (1–2 API requests per completed map across every gamemode). So the *derived* rank numbers
+// (`perMapRank`) are persisted to `$.persistentStorage` keyed by the *viewed* user's id, letting a
+// re-open render the ladder / avg-rank / per-map cells instantly with zero network. The per-(mode,
+// style,filter) `rankResults` aggregates are NOT stored — they're re-derived from `perMapRank` on load
+// (`recomputeRankResult`), so `perMapRank` is the single source of truth. Only the local completion set
+// (local map cache) and remote PBs (fetched on search) supply the target list, both already available.
+const STATS_CACHE_VERSION = 1; // bump to invalidate old caches when the PerMapRank shape changes
+const STATS_CACHE_PREFIX = 'stats.cache.'; // + viewed user id
+interface StatsCache {
+	v: number;
+	ts: number; // ms epoch of the last FULL scan (drives the "Updated Xm ago" line)
+	ranks: Record<string, PerMapRank>;
+}
+// Freshness of the currently-shown user's cache (0 = never fully scanned this view). Set by a full scan
+// or by loading a cache; NOT bumped by the cheap incremental refresh or popup write-back (those only
+// patch individual maps — the bulk of the ranks stays as old as the last full scan, so the label is honest).
+let dataTimestamp = 0;
+// A full scan (first-ever open for a user, or an explicit Rescan) is in progress — its drain sets the
+// timestamp and persists. A cached re-open leaves this false, so its no-op queue drain persists nothing.
+let scanIsFull = false;
+// Set by rescan() so buildAll() forces a fresh full scan instead of loading the (now stale) cache.
+let forceFullScan = false;
+// PB times of the searched remote user, keyed `mapID|gm|style` (MAIN/1 only), captured while fetching
+// their runs — lets the incremental refresh detect which of their maps changed (local users read this
+// from the local map cache instead, no fetch). Reset on each new search.
+let remotePbTimes: Record<string, number> = {};
+// A PB whose time moved by more than this (seconds) is treated as changed by the incremental refresh.
+// Generous so tiny float differences between the local-cache time and the API time don't requery the
+// whole set every open (which would defeat the cache); genuine rank-moving improvements are far larger,
+// and a full Rescan is the source of truth regardless.
+const PB_EPS = 0.05;
+
 // Leaderboard popup (opened by clicking a map name). Fetched on click and cached for the session so
 // re-opening is instant. The completion count comes from the LOCAL map cache (no HTTP) and the rank scan
 // only pulled `take=1` (WR) + your own rank — neither has the full board — so these are on-demand: one
@@ -257,6 +291,7 @@ class StatsHandler {
 		scanCache = null;
 		mapLbCache = {}; // boards may have changed — drop the cached top-10s / cutoffs so they refetch
 		yourStandingCache = {}; // and the cached "vs You" standings
+		forceFullScan = true; // the whole point of Rescan: the accurate-but-expensive path, not the cache
 		this.scan();
 	}
 
@@ -376,15 +411,240 @@ class StatsHandler {
 
 	/** Re-render completion + restart the (per-user) rank scans after the viewed user changes. */
 	applyUserChange() {
-		rankResults = {}; // rank stats are per-user — drop the cache
-		perMapRank = {}; // and the per-map rank detail
 		rankQueue = [];
 		rankGen++; // supersede any in-flight rank scan
 		selectedTier = null; // a different user's tier set / expansion no longer applies
+		// Load the newly-viewed user's own persisted rank cache (loadCacheForView resets perMapRank /
+		// rankResults / dataTimestamp for us). Each user keys its own entry, so switching users never
+		// clobbers another's cached ranks.
+		const hadCache = this.loadCacheForView();
+		scanIsFull = !hadCache;
 		this.updateViewLabel();
 		this.renderContent(); // recomputes completion from the new user
-		this.enqueueAllModes(); // refetch ranks for the new user (all modes, both filters)
+		this.enqueueAllModes(); // refetch (no-ops cached-complete keys) for the new user
+		if (hadCache) this.startIncrementalRefresh(); // catch their new/changed PBs cheaply
 	}
+
+	//#region persistent rank cache (§6i)
+
+	statsCacheKey(uid: number): string {
+		return `${STATS_CACHE_PREFIX}${uid}`;
+	}
+
+	/** Persist the current perMapRank + timestamp under the viewed user's key. Called when a full scan
+	 *  finishes, when the incremental refresh patches maps, and when the popup fetches a board. */
+	saveRankCache() {
+		const uid = this.viewUid();
+		if (!uid) return; // can't key it
+		const payload: StatsCache = { v: STATS_CACHE_VERSION, ts: dataTimestamp, ranks: perMapRank };
+		try {
+			$.persistentStorage.setItem(this.statsCacheKey(uid), payload);
+		} catch (e) {
+			$.Msg(`[Stats] saveRankCache failed: ${String(e)}`);
+		}
+	}
+
+	/** Read a user's persisted cache, or null (absent / wrong version / unreadable). */
+	loadRankCache(uid: number): StatsCache | null {
+		if (!uid) return null;
+		let raw: StatsCache | null = null;
+		try {
+			raw = $.persistentStorage.getItem<StatsCache>(this.statsCacheKey(uid));
+		} catch (e) {
+			$.Msg(`[Stats] loadRankCache failed: ${String(e)}`);
+			return null;
+		}
+		if (!raw || raw.v !== STATS_CACHE_VERSION || !raw.ranks) return null;
+		return raw;
+	}
+
+	/** Load the currently-viewed user's cache into perMapRank + rankResults. Always resets the in-memory
+	 *  rank state first (so a miss leaves it clean for a fresh scan). Returns true if a cache was loaded. */
+	loadCacheForView(): boolean {
+		perMapRank = {};
+		rankResults = {};
+		dataTimestamp = 0;
+		const cached = this.loadRankCache(this.viewUid());
+		if (!cached) return false;
+		perMapRank = cached.ranks;
+		dataTimestamp = cached.ts || 0;
+		this.recomputeTrackedRankResults();
+		$.Msg(`[Stats] loadCacheForView: ${Object.keys(perMapRank).length} cached maps, ts=${dataTimestamp}`);
+		return true;
+	}
+
+	/** Rebuild the rankResults aggregates from perMapRank for every mode's default style (+ the current
+	 *  selection's style) — the set enqueueAllModes scans — so a cached open shows numbers without network. */
+	recomputeTrackedRankResults() {
+		for (const gm of available) {
+			const st = GamemodeDefaultUIStyle.get(gm) ?? Style.NORMAL;
+			rankResults[this.rankKey(gm, st, 'ranked')] = this.recomputeRankResult(gm, st, 'ranked');
+			rankResults[this.rankKey(gm, st, 'unranked')] = this.recomputeRankResult(gm, st, 'unranked');
+		}
+		if (selectedMode != null && selectedMode !== ALL_MODES) {
+			const st = selectedStyle ?? GamemodeDefaultUIStyle.get(selectedMode) ?? Style.NORMAL;
+			for (const f of ['ranked', 'unranked'] as RankFilter[]) {
+				const k = this.rankKey(selectedMode, st, f);
+				if (!rankResults[k]) rankResults[k] = this.recomputeRankResult(selectedMode, st, f);
+			}
+		}
+	}
+
+	/** Derive one (mode,style,filter) RankResult purely from perMapRank — the same aggregation the live
+	 *  scan builds, so cached numbers match a fresh scan. A completed map absent from perMapRank counts as
+	 *  an error (it never got a successful response); a ranked map still missing its board total leaves the
+	 *  result pctPending (so enqueueRank re-scans it). */
+	recomputeRankResult(mode: Gamemode, style: Style | null, filter: RankFilter): RankResult {
+		const targets = this.gatherTargetsFor(mode, style, filter);
+		let wr = 0, top10 = 0, ranked = 0, noEntry = 0, errors = 0, sumRank = 0, sumPct = 0, pctCount = 0;
+		const groups = [0, 0, 0, 0, 0, 0];
+		let pending = false;
+		for (const t of targets) {
+			const pm = perMapRank[this.perMapKey(t.mapID, t.gm, t.style)];
+			if (!pm) {
+				errors++; // completed but no cached response — a scan gap the incremental refresh fills
+				continue;
+			}
+			if (pm.rank == null) {
+				noEntry++;
+				continue;
+			}
+			ranked++;
+			sumRank += pm.rank;
+			if (pm.rank === 1) wr++;
+			if (pm.rank <= 10) top10++;
+			if (pm.total != null && pm.total > 0) {
+				sumPct += (pm.rank / pm.total) * 100;
+				pctCount++;
+				if (pm.rank > 10) {
+					const g = this.bestGroup(pm.rank, pm.total);
+					if (g >= 1) groups[g - 1]++;
+				}
+			} else {
+				pending = true; // ranked but no total yet → phase-2 equivalent unfinished
+			}
+		}
+		return {
+			wr,
+			top10,
+			avgRank: ranked ? Math.round(sumRank / ranked) : 0,
+			avgPct: pctCount ? sumPct / pctCount : null,
+			pctPending: ranked > 0 && pending,
+			ranked,
+			noEntry,
+			errors,
+			targets: targets.length,
+			elapsed: 0,
+			sumRank,
+			sumPct,
+			pctCount,
+			groups
+		};
+	}
+
+	/** "just now" / "5m ago" / "3h ago" / "2d ago" for a ms-epoch timestamp. */
+	agoText(ts: number): string {
+		const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+		if (s < 45) return 'just now';
+		const m = Math.floor(s / 60);
+		if (m < 60) return `${m}m ago`;
+		const h = Math.floor(m / 60);
+		if (h < 24) return `${h}h ago`;
+		return `${Math.floor(h / 24)}d ago`;
+	}
+
+	//#endregion
+
+	//#region incremental refresh (§6i)
+
+	/** The viewed user's current PB time on a map's (gm, MAIN, style) board, or null if unknown. Local: from
+	 *  the local map cache (Pro/Teleport map to run-style 0, like isDone). Remote: from the PBs fetched on search. */
+	currentPbTime(map: MapCacheAPI.MapData, gm: Gamemode, style: Style): number | null {
+		if (viewUser) {
+			const t = remotePbTimes[this.perMapKey(map.staticData.id, gm, style)];
+			return t == null ? null : t;
+		}
+		const userData = map.userData;
+		if (!userData) return null;
+		const trackStyle = style === Style.PRO || style === Style.TELEPORT ? 0 : style;
+		const tr = getUserMapDataTrack(userData, gm, TrackType.MAIN, 1, trackStyle);
+		return tr?.completed ? (tr.time ?? null) : null;
+	}
+
+	/** Completed maps to re-check on an incremental refresh, deduped by perMapKey, across every mode's
+	 *  default style plus the current selection's style (the set that has cached ranks). */
+	gatherIncrementalTargets(): { map: MapCacheAPI.MapData; gm: Gamemode; style: Style; pbTime: number | null }[] {
+		const maps = scanCache ?? [];
+		const combos: [Gamemode, Style][] = [];
+		for (const gm of available) combos.push([gm, GamemodeDefaultUIStyle.get(gm) ?? Style.NORMAL]);
+		if (selectedMode != null && selectedMode !== ALL_MODES)
+			combos.push([selectedMode, selectedStyle ?? GamemodeDefaultUIStyle.get(selectedMode) ?? Style.NORMAL]);
+
+		const seen = new Set<string>();
+		const out: { map: MapCacheAPI.MapData; gm: Gamemode; style: Style; pbTime: number | null }[] = [];
+		for (const [gm, style] of combos) {
+			for (const map of maps) {
+				const { staticData } = map;
+				if (staticData.status !== MapStatus.APPROVED) continue;
+				const lb = getTrack(staticData, gm, TrackType.MAIN, 1, style);
+				if (!lb || !lb.tier) continue;
+				if (lb.type !== LeaderboardType.RANKED && lb.type !== LeaderboardType.UNRANKED) continue;
+				if (!this.isDone(map, gm, style)) continue;
+				const key = this.perMapKey(staticData.id, gm, style);
+				if (seen.has(key)) continue;
+				seen.add(key);
+				out.push({ map, gm, style, pbTime: this.currentPbTime(map, gm, style) });
+			}
+		}
+		return out;
+	}
+
+	/** Cheap auto-refresh on a cached open: re-query only the maps whose rank data is stale — newly
+	 *  completed (absent from perMapRank), previously not-on-board, or whose PB time moved. Caveat: this
+	 *  catches YOUR changes, not other players beating you on maps your PB didn't move — a full Rescan is
+	 *  the truth (see §6i). Does NOT bump dataTimestamp: only the changed maps are fresh, the rest stays as
+	 *  old as the last full scan. */
+	async startIncrementalRefresh() {
+		const gen = rankGen; // aborts if the user switches / a rescan happens
+		const uid = this.viewUid();
+		if (!uid || !scanCache) return;
+
+		const targets = this.gatherIncrementalTargets();
+		const changed = targets.filter((t) => {
+			const pm = perMapRank[this.perMapKey(t.map.staticData.id, t.gm, t.style)];
+			if (!pm) return true; // never scanned (new completion / prior error)
+			if (pm.rank == null) return true; // was not on the board — recheck (board may have re-versioned)
+			return t.pbTime != null && pm.time != null && Math.abs(t.pbTime - pm.time) > PB_EPS; // PB moved
+		});
+		if (!changed.length) {
+			$.Msg('[Stats] incremental refresh: nothing changed');
+			return;
+		}
+		$.Msg(`[Stats] incremental refresh: re-querying ${changed.length}/${targets.length} changed maps`);
+
+		await this.pool(changed, 10, async (t) => {
+			if (gen !== rankGen) return;
+			const res = await this.fetchRank(t.map.staticData.id, t.gm, t.style, uid);
+			if (gen !== rankGen || !res.ok) return; // superseded / failed — leave the cached value
+			const key = this.perMapKey(t.map.staticData.id, t.gm, t.style);
+			if (res.rank != null) {
+				const { total, wrTime } = await this.fetchTotal(t.map.staticData.id, t.gm, t.style);
+				if (gen !== rankGen) return;
+				perMapRank[key] = { rank: res.rank, time: res.time, total: total > 0 ? total : null, wrTime };
+			} else {
+				perMapRank[key] = { rank: null, time: null, total: null, wrTime: null };
+			}
+			this.updateTierRankRow(key);
+		});
+		if (gen !== rankGen) return;
+
+		this.recomputeTrackedRankResults();
+		if (curRankBody && curRankBody.IsValid())
+			this.renderRankResults(curRankBody, this.resultFor(selectedMode as Gamemode, selectedStyle, rankFilter));
+		this.saveRankCache(); // keeps the existing (full-scan) timestamp — only the changed maps are fresh
+	}
+
+	//#endregion
 
 	/** Resolve a search string (numeric id / SteamID64 / steam profile URL / alias) to a Momentum user. */
 	async resolveUser(q: string): Promise<ViewUser | null> {
@@ -413,9 +673,12 @@ class StatsHandler {
 		return { id: user.id, alias: user.alias ?? `User ${user.id}`, steamID: user.steamID };
 	}
 
-	/** Fetch every PB run for a user and build the set of completed leaderboard keys (paginated). */
+	/** Fetch every PB run for a user and build the set of completed leaderboard keys (paginated). Also
+	 *  captures each main-track PB time into `remotePbTimes` so the incremental refresh can tell which of
+	 *  the user's maps changed since their cache was written (local users read this from the local cache). */
 	async fetchUserDone(uid: number, gen: number): Promise<Set<string>> {
 		const done = new Set<string>();
+		remotePbTimes = {}; // fresh for this user
 		const take = 100;
 		let skip = 0;
 		for (let page = 0; page < 100; page++) {
@@ -426,6 +689,9 @@ class StatsHandler {
 			for (const r of data) {
 				if (r?.mapID == null) continue;
 				done.add(this.doneKey(r.mapID, r.gamemode, r.trackType, r.trackNum, r.style));
+				// Main-track PB time, keyed like perMapRank (the rank data is main-track only).
+				if (r.trackType === TrackType.MAIN && r.trackNum === 1 && r.time != null)
+					remotePbTimes[this.perMapKey(r.mapID, r.gamemode, r.style)] = r.time;
 			}
 			if (gen === userGen) this.setUserStatus(`Loading runs… ${done.size}`);
 			if (data.length < take) break; // last page
@@ -523,13 +789,24 @@ class StatsHandler {
 
 		if (selectedMode != null && selectedMode !== ALL_MODES) this.ensureStyle(selectedMode);
 
+		// Load the viewed user's persisted rank cache (unless Rescan forced a fresh scan). When present it
+		// populates perMapRank + re-derives the rankResults aggregates, so the ladder/tiers render instantly
+		// from cache with no network; when absent this is a first-ever full scan.
+		const hadCache = !forceFullScan && this.loadCacheForView();
+		forceFullScan = false;
+		if (!hadCache) dataTimestamp = 0; // a full scan (incl. a forced Rescan) re-stamps it on completion
+		scanIsFull = !hadCache; // a full scan's drain sets the timestamp + persists; a cached open doesn't
+
 		this.renderFilter();
 		this.renderBar();
 		this.renderContent(); // styles now render inside the right card (sub-left)
 		this.updateViewLabel(); // restore the "Viewing <user>" indicator on re-open
 
-		// Crunch through every gamemode's ranks in the background (current selection first).
+		// Kick the background scan. On the cached path, cached keys are already complete so enqueueAllModes
+		// no-ops them (see enqueueRank) — the cheap incremental refresh is what catches new completions /
+		// improved PBs. On the uncached path, enqueueAllModes IS the full scan.
 		this.enqueueAllModes();
+		if (hadCache) this.startIncrementalRefresh();
 	}
 
 	setRank(f: RankFilter) {
@@ -1011,7 +1288,10 @@ class StatsHandler {
 	async processRankQueue() {
 		if (rankBusy) return; // one scan at a time (this + set is atomic — no await between)
 		const item = rankQueue.shift();
-		if (!item) return;
+		if (!item) {
+			this.onScanQueueDrained();
+			return;
+		}
 		rankBusy = true;
 		try {
 			await this.runRankScan(item.mode, item.style, item.filter);
@@ -1020,6 +1300,19 @@ class StatsHandler {
 		}
 		if (rankQueue.length) await this.sleep(0.4); // brief breather between modes so we don't hammer the API
 		this.processRankQueue(); // next in queue
+	}
+
+	/** Called when the rank-scan queue empties. If a full scan was in progress (first-ever open or Rescan),
+	 *  stamp it fresh, persist the derived perMapRank, and re-render so the "Updated" line appears. A cached
+	 *  open's queue drains here too, but with scanIsFull=false it's a no-op (nothing re-scanned or persisted). */
+	onScanQueueDrained() {
+		if (!scanIsFull) return;
+		scanIsFull = false;
+		dataTimestamp = Date.now();
+		this.saveRankCache();
+		$.Msg(`[Stats] full scan complete — persisted ${Object.keys(perMapRank).length} maps`);
+		if (curRankBody && curRankBody.IsValid())
+			this.renderRankResults(curRankBody, this.resultFor(selectedMode as Gamemode, selectedStyle, rankFilter));
 	}
 
 	//#region live rank stats
@@ -1268,7 +1561,35 @@ class StatsHandler {
 		}
 		this.setLbStatus('');
 		this.renderMapLb(entry, standing);
+		// Popup → main cache: the board fetch already gave this map's rank / time / total / WR, so fold it
+		// straight into perMapRank (and persist) — opening a map's popup or hitting Refresh updates the
+		// stats cache for that map for free, no separate scan (§6i). Keyed identically (perMapKey).
+		this.writeBackFromBoard(gm, style, key, entry, standing);
 		this.fetchCutoffs(mapID, gm, style, key, gen, standing.time); // fill cutoff rows in place
+	}
+
+	/** Fold a freshly-fetched leaderboard board + the viewed user's standing back into the persistent rank
+	 *  cache. Only writes when we actually have the user's placement (a null time may be a transient request
+	 *  failure, not "unranked", so skip rather than clobber good data). Re-derives the affected aggregates. */
+	writeBackFromBoard(gm: Gamemode, style: Style, key: string, entry: MapLb, standing: Standing) {
+		if (standing.time == null || standing.rank == null) return;
+		const next: PerMapRank = {
+			rank: standing.rank,
+			time: standing.time,
+			total: entry.total > 0 ? entry.total : null,
+			wrTime: entry.rows[0]?.time ?? null
+		};
+		const prev = perMapRank[key];
+		if (prev && prev.rank === next.rank && prev.time === next.time && prev.total === next.total && prev.wrTime === next.wrTime)
+			return; // unchanged — nothing to recompute or persist
+		perMapRank[key] = next;
+		this.updateTierRankRow(key); // reflect it in the tier list behind the popup, if shown
+		// The map belongs to whichever of ranked/unranked its board is — recompute both so the ladder updates.
+		rankResults[this.rankKey(gm, style, 'ranked')] = this.recomputeRankResult(gm, style, 'ranked');
+		rankResults[this.rankKey(gm, style, 'unranked')] = this.recomputeRankResult(gm, style, 'unranked');
+		if (curRankBody && curRankBody.IsValid())
+			this.renderRankResults(curRankBody, this.resultFor(selectedMode as Gamemode, selectedStyle, rankFilter));
+		this.saveRankCache(); // patch persists under the existing full-scan timestamp
 	}
 
 	/** Badge label + colour for a cutoff row. Sentinel group 0 is the board's absolute last place. */
@@ -1809,6 +2130,15 @@ class StatsHandler {
 			$.CreatePanel('Label', body, '', {
 				text: 'All requests failed — the API may be unreachable from the game.',
 				style: 'font-size: 11px; color: #e0a86f; margin-top: 6px; horizontal-align: center; text-align: center;'
+			});
+		}
+
+		// Freshness of the cached ranks (from the last full scan). The incremental auto-refresh only patches
+		// your changed maps, so others' ranks can drift stale between full scans — Rescan is the source of truth.
+		if (dataTimestamp > 0) {
+			$.CreatePanel('Label', body, '', {
+				text: `Updated ${this.agoText(dataTimestamp)} · Rescan for a full refresh`,
+				style: 'font-size: 11px; color: #6f7885; margin-top: 8px; horizontal-align: center; text-align: center;'
 			});
 		}
 	}

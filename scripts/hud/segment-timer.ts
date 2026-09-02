@@ -33,7 +33,7 @@ import { CustomizerPropertyType, registerHUDCustomizerComponent, getTextShadowFa
  */
 
 // Logs savestate events + persistent-storage save/load to the console. Set false unless debugging.
-const DEBUG = true;
+const DEBUG = false;
 
 // How many recent jumps to keep in the jump log window.
 const JUMP_LOG_SIZE = 6;

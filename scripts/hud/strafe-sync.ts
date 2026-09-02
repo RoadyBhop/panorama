@@ -14,6 +14,8 @@ import { rgbaStringToTuple } from 'util/colors';
  * (shows if you pressed your keys late or early compared to your mouse direction)".
  */
 
+const DEBUG = false; // gates the [StrafeOffset] console logging
+
 const DEFAULT_HISTORY = 15;
 const DEFAULT_MAX_OFFSET = 8; // ticks that map to the full up/down extent
 const DEFAULT_PERFECT = 1; // |offset| ≤ this (ticks) counts as perfect
@@ -155,10 +157,11 @@ class StrafeOffset {
 				}
 			},
 			postInit: () => {
-				$.Msg(
-					`[StrafeOffset] postInit: canvas=${!!this.panels.canvas} text=${!!this.panels.text} ` +
-						`history=${this.historyLength}`
-				);
+				if (DEBUG)
+					$.Msg(
+						`[StrafeOffset] postInit: canvas=${!!this.panels.canvas} text=${!!this.panels.text} ` +
+							`history=${this.historyLength}`
+					);
 				if (this.panels.text) this.panels.text.visible = this.showText;
 				this.panels.canvas?.SetMaxDrawCommands(512); // bars + solid lines + one faint line per tick interval
 				// MomHudStrafeSync doesn't dispatch HudProcessInput to us, so drive updates ourselves.
@@ -176,7 +179,7 @@ class StrafeOffset {
 			// not in a live gameplay state yet (APIs unavailable) — just keep looping
 			if (!this.dbgErr) {
 				this.dbgErr = true;
-				$.Msg(`[StrafeOffset] onUpdate threw (will keep retrying): ${String(e)}`);
+				if (DEBUG) $.Msg(`[StrafeOffset] onUpdate threw (will keep retrying): ${String(e)}`);
 			}
 		}
 		$.Schedule(0, () => this.loop());
@@ -185,7 +188,7 @@ class StrafeOffset {
 	onUpdate() {
 		if (!this.dbgFired) {
 			this.dbgFired = true;
-			$.Msg('[StrafeOffset] onUpdate is firing (self-scheduled loop)');
+			if (DEBUG) $.Msg('[StrafeOffset] onUpdate is firing (self-scheduled loop)');
 		}
 		// Inputs are sampled per TICK, so we work in whole tick indices — snap the current game time to its
 		// tick. (GetCurrentTime is continuous frame time, so timing switches in seconds gave meaningless
@@ -248,7 +251,8 @@ class StrafeOffset {
 	record(offsetTicks: number, side: number) {
 		this.history.push({ offset: offsetTicks, side });
 		while (this.history.length > this.historyLength) this.history.shift();
-		$.Msg(`[StrafeOffset] keyswitch recorded: ${offsetTicks}t (${offsetTicks > 0 ? 'late' : offsetTicks < 0 ? 'early' : 'perfect'})`);
+		if (DEBUG)
+			$.Msg(`[StrafeOffset] keyswitch recorded: ${offsetTicks}t (${offsetTicks > 0 ? 'late' : offsetTicks < 0 ? 'early' : 'perfect'})`);
 		this.updateText(offsetTicks);
 	}
 
@@ -296,7 +300,7 @@ class StrafeOffset {
 
 		if (!this.dbgDrew) {
 			this.dbgDrew = true;
-			$.Msg(`[StrafeOffset] first draw with valid canvas size: ${W.toFixed(0)}x${H.toFixed(0)}`);
+			if (DEBUG) $.Msg(`[StrafeOffset] first draw with valid canvas size: ${W.toFixed(0)}x${H.toFixed(0)}`);
 		}
 
 		canvas.Clear('#00000000');
