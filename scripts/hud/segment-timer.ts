@@ -38,8 +38,8 @@ import { pointInRegion } from 'common/zone-geometry';
 // Logs savestate events + persistent-storage save/load to the console. Set false unless debugging.
 const DEBUG = false;
 
-// How many recent jumps to keep in the jump log window.
-const JUMP_LOG_SIZE = 6;
+// Default number of recent jumps kept in the jump log window (customizable at runtime via `jumpLogSize`).
+const DEFAULT_JUMP_LOG_SIZE = 6;
 
 // While held at a saveloc the player's movetype is NONE (frozen in place - velocity is stored but not
 // applied, which is why the speedometer shows the exit speed). Any other movetype means they're playing
@@ -135,8 +135,9 @@ class SegmentTimerHandler {
 	private segFrozen = false; // timer parked because the player's movetype is NONE (held at a saveloc)
 	private loadTarget: { time: number; jumps: number } | null = null; // slot snapshot to park the timer at
 
-	// Recent jumps: the spliced jump count + segment time captured at each of the last JUMP_LOG_SIZE jumps.
+	// Recent jumps: the spliced jump count + segment time captured at each of the last `jumpLogSize` jumps.
 	private jumpLog: { count: number; time: number }[] = [];
+	private jumpLogSize = DEFAULT_JUMP_LOG_SIZE; // customizer-controlled window size
 
 	// Per-zone splits: the spliced segment time captured when the player enters each stage / minor checkpoint /
 	// end zone. Driven by the player-state bridge (real position via cl_showpos) + point-in-polygon, NOT the
@@ -168,8 +169,9 @@ class SegmentTimerHandler {
 			resizeX: false,
 			resizeY: false,
 			dynamicStyles: {
+				// --- Main timer text ---
 				fontSize: {
-					name: 'Font Size',
+					name: 'Time Font Size',
 					type: CustomizerPropertyType.NUMBER_ENTRY,
 					targetPanel: '.segmenttimer__segment',
 					styleProperty: 'fontSize',
@@ -177,12 +179,19 @@ class SegmentTimerHandler {
 					settingProps: { min: 1, max: 200 }
 				},
 				fontColor: {
-					name: 'Font Color',
+					name: 'Time Color',
 					type: CustomizerPropertyType.COLOR_PICKER,
 					targetPanel: '.segmenttimer__segment',
 					styleProperty: 'color',
 					callbackFunc: (panel, value) =>
 						(panel.style.textShadowFast = getTextShadowFast(value as rgbaColor, 0.9))
+				},
+				// No targetPanel → applies to the registered root (#SegmentTimer) itself; a `.segmenttimer`
+				// selector would NOT match it (customizer's `.class` lookup is descendants-only).
+				backgroundColor: {
+					name: 'Background Color',
+					type: CustomizerPropertyType.COLOR_PICKER,
+					styleProperty: 'backgroundColor'
 				},
 				showSlot: {
 					name: 'Show Savestate Slot',
@@ -190,6 +199,82 @@ class SegmentTimerHandler {
 					targetPanel: '.segmenttimer__slot',
 					styleProperty: 'visibility',
 					valueFn: (value) => (value ? 'visible' : 'collapse')
+				},
+
+				// --- Zone splits (collapsible group) ---
+				splitsGroup: {
+					name: 'Zone Splits',
+					type: CustomizerPropertyType.NONE,
+					expandable: true,
+					children: [{ styleID: 'showSplits' }, { styleID: 'splitsFontSize' }, { styleID: 'splitsColor' }]
+				},
+				showSplits: {
+					name: 'Show Zone Splits',
+					type: CustomizerPropertyType.CHECKBOX,
+					targetPanel: '.segmenttimer__splits',
+					styleProperty: 'visibility',
+					valueFn: (value) => (value ? 'visible' : 'collapse')
+				},
+				splitsFontSize: {
+					name: 'Splits Font Size',
+					type: CustomizerPropertyType.NUMBER_ENTRY,
+					targetPanel: '.segmenttimer__splits',
+					styleProperty: 'fontSize',
+					valueFn: (value) => `${value}px`,
+					settingProps: { min: 1, max: 100 }
+				},
+				splitsColor: {
+					name: 'Splits Color',
+					type: CustomizerPropertyType.COLOR_PICKER,
+					targetPanel: '.segmenttimer__splits',
+					styleProperty: 'color'
+				},
+
+				// --- Jump log (collapsible group) ---
+				jumpLogGroup: {
+					name: 'Jump Log',
+					type: CustomizerPropertyType.NONE,
+					expandable: true,
+					children: [
+						{ styleID: 'showJumpLog' },
+						{ styleID: 'jumpLogSize' },
+						{ styleID: 'jumpLogFontSize' },
+						{ styleID: 'jumpLogColor' }
+					]
+				},
+				showJumpLog: {
+					name: 'Show Jump Log',
+					type: CustomizerPropertyType.CHECKBOX,
+					targetPanel: '.segmenttimer__log',
+					styleProperty: 'visibility',
+					valueFn: (value) => (value ? 'visible' : 'collapse')
+				},
+				// Number of recent jumps kept in the window. Not a CSS prop - drive the JS field via callbackFunc
+				// (runs on init AND change) and trim the existing log when it shrinks. min:1 keeps multi-digit
+				// entry usable (NumberEntry clamps to min on every keystroke - see PANORAMA_NOTES §4).
+				jumpLogSize: {
+					name: 'Jumps Shown',
+					type: CustomizerPropertyType.NUMBER_ENTRY,
+					callbackFunc: (_panel, value) => {
+						this.jumpLogSize = Math.max(1, Math.round((value as number) ?? DEFAULT_JUMP_LOG_SIZE));
+						while (this.jumpLog.length > this.jumpLogSize) this.jumpLog.shift();
+						this.updateLog();
+					},
+					settingProps: { min: 1, max: 30, increment: 1 }
+				},
+				jumpLogFontSize: {
+					name: 'Jump Log Font Size',
+					type: CustomizerPropertyType.NUMBER_ENTRY,
+					targetPanel: '.segmenttimer__log',
+					styleProperty: 'fontSize',
+					valueFn: (value) => `${value}px`,
+					settingProps: { min: 1, max: 100 }
+				},
+				jumpLogColor: {
+					name: 'Jump Log Color',
+					type: CustomizerPropertyType.COLOR_PICKER,
+					targetPanel: '.segmenttimer__log',
+					styleProperty: 'color'
 				}
 			}
 		});
@@ -289,7 +374,7 @@ class SegmentTimerHandler {
 		this.splicedJumps++;
 		// Newest on the bottom: append, and drop the oldest off the top when over capacity.
 		this.jumpLog.push({ count: this.splicedJumps, time: this.segment.value() });
-		if (this.jumpLog.length > JUMP_LOG_SIZE) this.jumpLog.shift();
+		if (this.jumpLog.length > this.jumpLogSize) this.jumpLog.shift();
 		this.updateLog();
 	}
 

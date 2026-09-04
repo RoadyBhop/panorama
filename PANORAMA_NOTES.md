@@ -532,11 +532,18 @@ run timer is disabled by `mom_savestate_create`/`_load` (practice mode), so this
   added to `hud.xml` among the general elements. `segment-timer.xml`'s root is an id‑less full‑screen
   `.segmenttimer-root`; the positioned element is its **child `#SegmentTimer`** (id on the child, not the
   topmost root — §7 loader rule). Both frame + root are `width/height:100%` so the customizer's absolute
-  offset = screen coords. Registered with `registerHUDCustomizerComponent($('#SegmentTimer'), …)`; dynamicStyles
-  = `fontSize` (NUMBER_ENTRY→fontSize px), `fontColor` (COLOR_PICKER→color + `getTextShadowFast`), `showSlot`
-  (CHECKBOX→`.segmenttimer__slot` visibility). Names are **plain strings** (no `$.Localize`) so no
-  localization/restart needed. `hud_default.kv3` `SegmentTimer` block: `enabled/offsetX 900/offsetY 480` +
-  those three dynamicStyles.
+  offset = screen coords. Registered with `registerHUDCustomizerComponent($('#SegmentTimer'), …)`. Names are
+  **plain strings** (no `$.Localize`) so no localization/restart needed. **Customizer options** (each targets one
+  of the four labels — `__segment`/`__slot`/`__splits`/`__log`): main **Time Font Size / Time Color** + a panel
+  **Background Color**, **Show Savestate Slot**; a collapsible **Zone Splits** group (`type:NONE, expandable, children`)
+  = Show / Font Size / Color; a collapsible **Jump Log** group = Show / **Jumps Shown** / Font Size / Color.
+  **Jumps Shown** is the one non‑CSS option: it drives the JS `jumpLogSize` field via `callbackFunc: (_, value) =>
+  {…}` (runs on init AND change — trims the existing log when shrunk) with `settingProps:{min:1,max:30}` (min 1
+  keeps multi‑digit entry usable, §4); the CSS ones use `targetPanel`+`styleProperty`(+`valueFn`), CHECKBOX
+  visibility toggles return `visible`/`collapse`. **Every non‑NONE style needs a `hud_default.kv3` default** (the
+  `SegmentTimer` block now lists all 11) — so **adding these needs a full game restart**, not just `panorama_reload`
+  (a reload registers the new styleIDs but won't re‑read the kv3, so the customizer throws "Could not load dynamic
+  style value" until you restart). Group styles are `type:NONE` and need no default.
 - **One clock** — the SEGMENT time (`Stopwatch` helper: pausable, `value = base + (now − origin)` while
   running, else `base`, off `MomentumMovementAPI.GetCurrentTime()`), updated each frame by a **self‑scheduled
   `$.Schedule(0,…)` loop** (a plain panel gets no `HudProcessInput`), shown via
